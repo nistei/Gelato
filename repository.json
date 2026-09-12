@@ -8,6 +8,14 @@
     "owner": "lstb1t",
     "versions": [
       {
+        "version": "0.26.17.1004",
+        "targetAbi": "12.0.0.0",
+        "checksum": "7dd204945734747f1f043134417e3d9b",
+        "sourceUrl": "https://github.com/nistei/Gelato/releases/download/dev-v0.26.17.1004/gelato_0.26.17.1004.zip",
+        "timestamp": "2026-09-12T23:12:08Z",
+        "changelog": "Dev build of `main` at 28652b4.\n\n### Changes since dev-v0.26.17.1003\n\n- fix: no version count on Gelato movies in search results (28652b4)\n"
+      },
+      {
         "version": "0.26.17.1003",
         "targetAbi": "12.0.0.0",
         "checksum": "e812393f6a24c42e9b5328a20ea5bfa0",
