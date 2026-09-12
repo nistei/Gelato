@@ -8,6 +8,14 @@
     "owner": "lstb1t",
     "versions": [
       {
+        "version": "0.26.17.1003",
+        "targetAbi": "12.0.0.0",
+        "checksum": "e812393f6a24c42e9b5328a20ea5bfa0",
+        "sourceUrl": "https://github.com/nistei/Gelato/releases/download/dev-v0.26.17.1003/gelato_0.26.17.1003.zip",
+        "timestamp": "2026-09-12T23:02:32Z",
+        "changelog": "Dev build of `main` at eeab99b.\n\n### Changes since dev-v0.26.17.1002\n\n- feat: link stream rows as Jellyfin alternate versions (eeab99b)\n"
+      },
+      {
         "version": "0.26.17.1002",
         "targetAbi": "12.0.0.0",
         "checksum": "d990ee8f4ae1720d589bbde7402291ef",
