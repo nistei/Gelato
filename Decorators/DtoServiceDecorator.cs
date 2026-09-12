@@ -139,20 +139,24 @@ public sealed class DtoServiceDecorator(
             return;
         }
 
-        if (
-            dto.MediaSourceCount is not > 1
-            || item is not Video { PrimaryVersionId: null, LinkedAlternateVersions.Length: > 0 } video
-        )
+        if (dto.MediaSourceCount is not > 1 || item is not Video { PrimaryVersionId: null } video)
         {
             return;
         }
 
-        // A Gelato movie/episode only ever has stream rows linked; look up a local one's links.
-        var streams = video.IsGelato()
-            ? video.LinkedAlternateVersions.Length
-            : video.LinkedAlternateVersions.Count(l =>
-                l.ItemId is { } id && libraryManager.GetItemById(id)?.HasStreamTag() == true
-            );
+        // A Gelato movie/episode only ever has stream rows linked. Jellyfin counts the links in
+        // the database by id, so this also covers items that are not the library's instance, like
+        // the ones search results are built from.
+        if (video.IsGelato())
+        {
+            dto.MediaSourceCount = null;
+            return;
+        }
+
+        var links = (libraryManager.GetItemById(video.Id) as Video ?? video).LinkedAlternateVersions;
+        var streams = links.Count(l =>
+            l.ItemId is { } id && libraryManager.GetItemById(id)?.HasStreamTag() == true
+        );
         if (streams == 0)
             return;
 
