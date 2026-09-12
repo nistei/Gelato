@@ -1,0 +1,170 @@
+name: Dev Release
+
+# Fork-only: builds the current branch as a prerelease and publishes it in a
+# separate plugin repository on the gh-pages branch. Upstream ships real
+# releases through release.yml and publish.yml.
+#
+# Dev versions keep build.yaml's major.minor.patch and turn the last part into
+# rev * 1000 + run number, so 0.26.17.1 becomes 0.26.17.1042. That sorts above
+# the upstream release the branch is based on and below the next minor bump.
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep:
+        description: How many dev releases to keep (older ones are deleted)
+        required: false
+        default: "10"
+
+concurrency:
+  group: dev-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  dev-release:
+    if: github.event.repository.fork
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PAGES_BRANCH: gh-pages
+      MANIFEST: repository.json
+      KEEP: ${{ inputs.keep || '10' }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set dev version
+        id: version
+        run: |
+          base=$(yq '.version' build.yaml)
+          IFS=. read -r major minor patch rev <<< "$base"
+          version="$major.$minor.$patch.$((rev * 1000 + GITHUB_RUN_NUMBER))"
+          tag="dev-v$version"
+          sed -i "s/^version: .*/version: \"$version\"/" build.yaml
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Dev version $version (based on $base)"
+
+      - name: Write release notes
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          prev=$(git tag -l 'dev-v*' --sort=-v:refname | head -n1)
+          {
+            echo "Dev build of \`${GITHUB_REF_NAME}\` at ${GITHUB_SHA::7}."
+            echo
+            if [ -n "$prev" ]; then
+              echo "### Changes since $prev"
+              echo
+              git log --no-merges --format='- %s (%h)' "$prev..HEAD"
+            else
+              echo "### Recent changes"
+              echo
+              git log --no-merges --format='- %s (%h)' -n 20
+            fi
+          } > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.*"
+
+      - name: Build plugin
+        id: jprm
+        uses: oddstr13/jellyfin-plugin-repository-manager@9497a0a499416cc572ed2e07a391d9f943a37b4d # v1.1.1
+        with:
+          dotnet-target: "net10.0"
+
+      - name: Create GitHub release
+        id: release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          ZIP: ${{ steps.jprm.outputs.artifact }}
+        run: |
+          dir=$(dirname "$ZIP")
+          name=$(basename "$ZIP")
+          (cd "$dir" && md5sum "$name" > "${name%.*}.md5" && sha256sum "$name" > "${name%.*}.sha256")
+          gh release create "$TAG" "$ZIP" "$dir/${name%.*}.md5" "$dir/${name%.*}.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Dev $VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md"
+          echo "checksum=$(cut -c1-32 "$dir/${name%.*}.md5")" >> "$GITHUB_OUTPUT"
+          echo "url=https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$name" >> "$GITHUB_OUTPUT"
+
+      - name: Delete old dev releases
+        id: prune
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          tags=$( { gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate \
+            --jq '.[] | select(.tag_name | startswith("dev-v")) | .tag_name'; echo "$TAG"; } \
+            | sort -u | sed 's/^dev-v//' | sort -rV)
+          echo "$tags" | tail -n +"$((KEEP + 1))" | while read -r old; do
+            [ -n "$old" ] || continue
+            echo "Deleting dev-v$old"
+            gh release delete "dev-v$old" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+          done
+          echo "kept=$(echo "$tags" | head -n "$KEEP" | jq -R . | jq -cs .)" >> "$GITHUB_OUTPUT"
+
+      - name: Update plugin repository manifest
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          CHECKSUM: ${{ steps.release.outputs.checksum }}
+          SOURCE_URL: ${{ steps.release.outputs.url }}
+          KEPT: ${{ steps.prune.outputs.kept }}
+        run: |
+          pages="$RUNNER_TEMP/pages"
+          if git ls-remote --exit-code --heads origin "$PAGES_BRANCH" > /dev/null; then
+            git fetch origin "$PAGES_BRANCH"
+            git worktree add "$pages" FETCH_HEAD
+          else
+            git worktree add --detach "$pages"
+            git -C "$pages" checkout --orphan "$PAGES_BRANCH"
+            git -C "$pages" rm -rfq .
+          fi
+          [ -f "$pages/$MANIFEST" ] || echo '[]' > "$pages/$MANIFEST"
+
+          plugin=$(yq -o=json '{"category": .category, "description": .description, "guid": .guid, "name": .name, "overview": .overview, "owner": .owner}' build.yaml)
+          entry=$(jq -n \
+            --arg version "$VERSION" \
+            --arg targetAbi "$(yq '.targetAbi' build.yaml)" \
+            --arg checksum "$CHECKSUM" \
+            --arg sourceUrl "$SOURCE_URL" \
+            --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --rawfile changelog "$RUNNER_TEMP/notes.md" \
+            '{version: $version, targetAbi: $targetAbi, checksum: $checksum, sourceUrl: $sourceUrl, timestamp: $timestamp, changelog: $changelog}')
+
+          jq --argjson plugin "$plugin" --argjson entry "$entry" --argjson kept "$KEPT" '
+            [$plugin + {versions: (
+              [$entry] + [(.[0].versions // [])[] | select(.version != $entry.version)]
+              | map(select(.version | IN($kept[])))
+              | sort_by(.version | split(".") | map(tonumber))
+              | reverse
+            )}]' "$pages/$MANIFEST" > "$RUNNER_TEMP/manifest.json"
+          mv "$RUNNER_TEMP/manifest.json" "$pages/$MANIFEST"
+          cat "$pages/$MANIFEST"
+
+          cd "$pages"
+          git add "$MANIFEST"
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "Dev release $VERSION"
+          git push origin "HEAD:$PAGES_BRANCH"
+
+      - name: Summary
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          {
+            echo "### Dev release $VERSION"
+            echo
+            echo "Plugin repository: \`https://raw.githubusercontent.com/$GITHUB_REPOSITORY/refs/heads/$PAGES_BRANCH/$MANIFEST\`"
+          } >> "$GITHUB_STEP_SUMMARY"
