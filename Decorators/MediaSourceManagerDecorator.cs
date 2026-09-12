@@ -103,7 +103,7 @@ public sealed class MediaSourceManagerDecorator(
 
         var cfg = GelatoPlugin.Instance!.GetConfig(userId);
         if (
-            (!cfg.EnableMixed && !IsGelatoPlaybackItem(item))
+            (!cfg.EnableMixed && !item.IsGelatoPlaybackItem())
             || item.GetBaseItemKind() is not (BaseItemKind.Movie or BaseItemKind.Episode)
         )
         {
@@ -388,7 +388,7 @@ public sealed class MediaSourceManagerDecorator(
             return sources;
 
         var owner = ResolveOwnerFor(selected, item);
-        if (!IsGelatoPlaybackItem(owner))
+        if (!owner.IsGelatoPlaybackItem())
         {
             return await _inner
                 .GetPlaybackMediaSources(item, user, allowMediaProbe, enablePathSubstitution, ct)
@@ -466,10 +466,6 @@ public sealed class MediaSourceManagerDecorator(
         BaseItem ResolveOwnerFor(MediaSourceInfo s, BaseItem fallback) =>
             Guid.TryParse(s.ETag, out var g) ? libraryManager.GetItemById(g) ?? fallback : fallback;
     }
-
-    private static bool IsGelatoPlaybackItem(BaseItem item) =>
-        item.HasStreamTag()
-        || (item.Path?.StartsWith("gelato://", StringComparison.OrdinalIgnoreCase) ?? false);
 
     public Task<MediaSourceInfo> GetMediaSource(
         BaseItem item,
