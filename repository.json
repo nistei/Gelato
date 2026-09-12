@@ -8,6 +8,14 @@
     "owner": "lstb1t",
     "versions": [
       {
+        "version": "0.26.17.1002",
+        "targetAbi": "12.0.0.0",
+        "checksum": "d990ee8f4ae1720d589bbde7402291ef",
+        "sourceUrl": "https://github.com/nistei/Gelato/releases/download/dev-v0.26.17.1002/gelato_0.26.17.1002.zip",
+        "timestamp": "2026-09-12T20:31:36Z",
+        "changelog": "Dev build of `main` at 389f381.\n\n### Changes since dev-v0.26.17.1001\n\n"
+      },
+      {
         "version": "0.26.17.1001",
         "targetAbi": "12.0.0.0",
         "checksum": "45a0d642b8e5e467138dc65749e8f169",
