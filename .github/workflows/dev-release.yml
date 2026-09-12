@@ -53,6 +53,8 @@ jobs:
       - name: Write release notes
         env:
           TAG: ${{ steps.version.outputs.tag }}
+        # Issue references are dropped or put in code spans, so the notes never
+        # mention upstream issues and pull requests.
         run: |
           prev=$(git tag -l 'dev-v*' --sort=-v:refname | head -n1)
           {
@@ -67,7 +69,7 @@ jobs:
               echo
               git log --no-merges --format='- %s (%h)' -n 20
             fi
-          } > "$RUNNER_TEMP/notes.md"
+          } | sed -E 's/ \(#[0-9]+\)//g; s/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#[0-9]+/`&`/g' > "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md"
 
       - name: Setup .NET
