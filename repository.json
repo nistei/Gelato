@@ -1,0 +1,20 @@
+[
+  {
+    "category": "General",
+    "description": "Stream external media.\n",
+    "guid": "94EA4E14-8163-4989-96FE-0A2094BC2D6A",
+    "name": "Gelato",
+    "overview": "Stream external media.",
+    "owner": "lstb1t",
+    "versions": [
+      {
+        "version": "0.26.17.1001",
+        "targetAbi": "12.0.0.0",
+        "checksum": "45a0d642b8e5e467138dc65749e8f169",
+        "sourceUrl": "https://github.com/nistei/Gelato/releases/download/dev-v0.26.17.1001/gelato_0.26.17.1001.zip",
+        "timestamp": "2026-09-12T20:29:57Z",
+        "changelog": "Dev build of `main` at 389f381.\n\n### Recent changes\n\n- ci: keep issue references out of dev release notes (389f381)\n- ci: add dev release workflow for the fork (1f7fc50)\n- fix: open the right movie when switching versions in a collection (73f4467)\n- fix: refresh the item cache after the tree sync updates episodes (52ad226)\n- fix: update existing episodes in the series tree sync (7213a98)\n- fix: keep stream rows out of season and series episode counts (8aee63a)\n- chore(release): bump version to v0.26.17.1 (f3f6977)\n- fix: stop downloading the same subtitles for gelato items on every run (62fcc16)\n- fix: prevent duplicate entries in similar items and variant selector (a6731c8)\n- fix: make stream probes use Jellyfin's probe provider (7b71cd6)\n- chore(release): bump version to v0.26.17.0 (e3d1023)\n- feat: Jellyfin 12 compatibility (8a5e1b2)\n- chore(release): bump version to v0.26.16.1 (8067f41)\n- fix: protect the library during the Jellyfin 12 upgrade (c265349)\n- chore(release): bump version to v0.26.16.0 (db72b96)\n- fix: probe a stream without running the whole metadata pipeline (3520086)\n- fix: keep search results when a meta has a blank imdb_id (cbc73b2)\n- fix: keep physical local playback outside Gelato probes (ce87180)\n- Update README.md (4e4b276)\n- Update README.md (fd77be5)\n"
+      }
+    ]
+  }
+]
