@@ -3,14 +3,21 @@ using MediaBrowser.Model.MediaInfo;
 using Jellyfin.Database.Implementations.Entities; // User
 using MediaBrowser.Controller.Dto;
 using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.Querying;
 using Microsoft.AspNetCore.Http;
 
 namespace Gelato.Decorators;
 
-public sealed class DtoServiceDecorator(IDtoService inner, Lazy<GelatoManager> manager, IHttpContextAccessor http)
-    : IDtoService
+public sealed class DtoServiceDecorator(
+    IDtoService inner,
+    Lazy<GelatoManager> manager,
+    IHttpContextAccessor http,
+    ILibraryManager libraryManager,
+    IUserDataManager userDataManager
+) : IDtoService
 {
     private readonly Lazy<GelatoManager> _manager = manager;
     private readonly IHttpContextAccessor _http = http;
@@ -26,8 +33,131 @@ public sealed class DtoServiceDecorator(IDtoService inner, Lazy<GelatoManager> m
     )
     {
         var dto = inner.GetBaseItemDto(item, options, user, owner);
+        AddPrimaryVersionFields(dto, item, options, user);
+        CountStreamsAsOneSource(dto, item);
         Patch(dto, item, _http.HttpContext?.IsApiListing() == true, user);
         return dto;
+    }
+
+    /// <summary>
+    /// A stream row is a version of its movie/episode, and clients show it as the page item when it
+    /// is picked. Give it the movie's images, cast and tags: rows store no images or people, and
+    /// their only tag marks them as stream rows. Image requests for a row are served from the movie
+    /// by ImageResourceFilter. The watch state is the movie's too: StreamUserDataSync copies what is
+    /// saved on a stream to the movie, and rows linked or added later hold none of it.
+    /// </summary>
+    private void AddPrimaryVersionFields(
+        BaseItemDto dto,
+        BaseItem item,
+        DtoOptions options,
+        User? user
+    )
+    {
+        if (
+            !item.HasStreamTag()
+            || (item as Video)?.PrimaryVersionId is not { } primaryId
+            || libraryManager.GetItemById(primaryId) is not { } primary
+        )
+        {
+            return;
+        }
+
+        if (options.ContainsField(ItemFields.Tags))
+        {
+            dto.Tags = primary.Tags;
+        }
+
+        if (
+            dto.UserData is { } userData
+            && user is not null
+            && userDataManager.GetUserDataDto(primary, user) is { } primaryData
+        )
+        {
+            userData.Played = primaryData.Played;
+            userData.PlayCount = primaryData.PlayCount;
+            userData.PlaybackPositionTicks = primaryData.PlaybackPositionTicks;
+            userData.PlayedPercentage = primaryData.PlayedPercentage;
+            userData.LastPlayedDate = primaryData.LastPlayedDate;
+            userData.IsFavorite = primaryData.IsFavorite;
+            userData.Likes = primaryData.Likes;
+            userData.Rating = primaryData.Rating;
+        }
+
+        var addPeople = dto.People is not { Length: > 0 } && options.ContainsField(ItemFields.People);
+        if (!options.EnableImages && !addPeople)
+        {
+            return;
+        }
+
+        List<ItemFields> fields = [ItemFields.PrimaryImageAspectRatio];
+        if (addPeople)
+        {
+            fields.Add(ItemFields.People);
+        }
+
+        var primaryDto = inner.GetBaseItemDto(
+            primary,
+            new DtoOptions(false)
+            {
+                Fields = fields,
+                EnableImages = options.EnableImages,
+                ImageTypes = options.ImageTypes,
+                ImageTypeLimit = options.ImageTypeLimit,
+                EnableUserData = false,
+            },
+            user
+        );
+
+        if (addPeople)
+        {
+            dto.People = primaryDto.People;
+        }
+
+        if (options.EnableImages)
+        {
+            dto.ImageTags = primaryDto.ImageTags;
+            dto.BackdropImageTags = primaryDto.BackdropImageTags;
+            dto.ImageBlurHashes = primaryDto.ImageBlurHashes;
+            if (options.ContainsField(ItemFields.PrimaryImageAspectRatio))
+            {
+                dto.PrimaryImageAspectRatio = primaryDto.PrimaryImageAspectRatio;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Stream rows are linked as versions, so Jellyfin counts them into MediaSourceCount and
+    /// clients badge every movie card with the number of streams. Count them as the one source
+    /// they stand in for, like before they were versions.
+    /// </summary>
+    private void CountStreamsAsOneSource(BaseItemDto dto, BaseItem item)
+    {
+        // A stream row reports its movie's count.
+        if (dto.MediaSourceCount is > 1 && item.HasStreamTag())
+        {
+            dto.MediaSourceCount = null;
+            return;
+        }
+
+        if (
+            dto.MediaSourceCount is not > 1
+            || item is not Video { PrimaryVersionId: null, LinkedAlternateVersions.Length: > 0 } video
+        )
+        {
+            return;
+        }
+
+        // A Gelato movie/episode only ever has stream rows linked; look up a local one's links.
+        var streams = video.IsGelato()
+            ? video.LinkedAlternateVersions.Length
+            : video.LinkedAlternateVersions.Count(l =>
+                l.ItemId is { } id && libraryManager.GetItemById(id)?.HasStreamTag() == true
+            );
+        if (streams == 0)
+            return;
+
+        var count = dto.MediaSourceCount.Value - streams;
+        dto.MediaSourceCount = count > 1 ? count : null;
     }
 
     public IReadOnlyList<BaseItemDto> GetBaseItemDtos(
@@ -50,6 +180,11 @@ public sealed class DtoServiceDecorator(IDtoService inner, Lazy<GelatoManager> m
         foreach (var itemDto in list)
         {
             Patch(itemDto, item, true, user);
+        }
+        for (var i = 0; i < list.Count && i < items.Count; i++)
+        {
+            AddPrimaryVersionFields(list[i], items[i], options, user);
+            CountStreamsAsOneSource(list[i], items[i]);
         }
         return list;
     }
