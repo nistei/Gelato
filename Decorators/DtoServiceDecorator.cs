@@ -174,10 +174,20 @@ public sealed class DtoServiceDecorator(
         {
             Patch(itemDto, item, true, user);
         }
-        for (var i = 0; i < list.Count && i < items.Count; i++)
+        // By id: the inner service leaves out items the user may not see, so the DTOs do not line
+        // up with the items by position.
+        var byId = new Dictionary<Guid, BaseItem>();
+        foreach (var candidate in items)
         {
-            AddPrimaryVersionFields(list[i], items[i], options, user);
-            CountStreamsAsOneSource(list[i], items[i]);
+            byId.TryAdd(candidate.Id, candidate);
+        }
+        foreach (var itemDto in list)
+        {
+            if (!byId.TryGetValue(itemDto.Id, out var source))
+                continue;
+
+            AddPrimaryVersionFields(itemDto, source, options, user);
+            CountStreamsAsOneSource(itemDto, source);
         }
         return list;
     }

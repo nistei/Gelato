@@ -706,6 +706,21 @@ public sealed class GelatoManager(
             .ToList();
         var toSave = stale.Except(toDelete).ToList();
 
+        // Every kept row becomes a version of this movie/episode below, so it needs the owner set:
+        // the version's page, images, watch state and collections are all resolved through it.
+        // Rows this sync did not touch (other users' rows synced before they were linked, or ones
+        // whose movie is gone) would otherwise be linked without one.
+        var kept = existingByGuid.Values.Except(toDelete).ToList();
+        foreach (var row in kept)
+        {
+            if (row.PrimaryVersionId == video.Id || upsertedStreams.Contains(row))
+                continue;
+
+            row.SetPrimaryVersionId(video.Id);
+            if (!toSave.Contains(row))
+                toSave.Add(row);
+        }
+
         persistence.SaveItems(toSave, ct);
 
         // Rows are loaded here straight from the database, and saved around LibraryManager: without
@@ -717,7 +732,7 @@ public sealed class GelatoManager(
 
         // Every row some user still has is a version of the movie/episode. Unlinking the rest
         // before they are deleted keeps Jellyfin from saving the movie once per deleted row.
-        LinkVersions(video, existingByGuid.Values.Except(toDelete).ToList(), ct);
+        LinkVersions(video, kept, ct);
         DeleteStreamRows(video, toDelete, ct);
 
         upsertedStreams.Add(video);

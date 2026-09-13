@@ -236,9 +236,7 @@ public sealed class MediaSourceManagerDecorator(
         var mediaOwner = isStreamRow ? primary : item;
         var hasOwnMedia =
             mediaOwner is not null
-            && (
-                !IsGelatoPlaybackItem(mediaOwner) || linkedVersions.Any(v => !v.HasStreamTag())
-            );
+            && (!IsGelatoPlaybackItem(mediaOwner) || linkedVersions.Any(v => !v.HasStreamTag()));
         var sources = !hasOwnMedia
             ? []
             : _inner
@@ -305,13 +303,13 @@ public sealed class MediaSourceManagerDecorator(
         // A Gelato movie/episode has no media of its own, so its first stream takes its id and the
         // movie is one of its versions: clients that play the source with the item's id get the
         // first stream, and its watch state stays on the movie. Version pages list it with the
-        // same id, so picking it there opens the movie.
+        // same id, the first stream's own page included, so picking it there opens the movie and
+        // playing it there reports progress on the movie.
         var primaryId = primary?.Id.ToString("N", CultureInfo.InvariantCulture);
         if (
             primaryId is not null
             && sources.All(s => s.Id != primaryId)
             && versions.FirstOrDefault().Source is { } first
-            && first.Id != itemId
         )
         {
             first.Id = primaryId;
@@ -377,11 +375,12 @@ public sealed class MediaSourceManagerDecorator(
             data => data.PlaybackPositionTicks > 0
         );
 
-        // The movie holds a copy of the stream's state; it is newer only when the stream with the
-        // movie's id was played since.
+        // The movie holds a copy of the stream's state, dated CopyOffset after the stream; it is
+        // newer only when the stream with the movie's id was played since.
         if (
             resumed.Source is not { } source
             || (userData[resumed.Row.Id].LastPlayedDate ?? DateTime.MinValue)
+                + StreamUserDataSync.CopyOffset
                 < (movieData.LastPlayedDate ?? DateTime.MinValue)
             || ReferenceEquals(sources[0], source)
         )

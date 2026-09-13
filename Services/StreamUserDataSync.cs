@@ -38,8 +38,15 @@ public sealed class StreamUserDataSync(
     }
 
     /// <summary>
-    /// The resume point a stopped stream just gave its movie, for the played-state pass that
-    /// follows on the same thread.
+    /// How much later than the stream the movie's copy of the last played date is set. The movie
+    /// wins Jellyfin's most-recently-played choice among the versions, and a stream is the more
+    /// recent one only when it was played after the movie by at least this much.
+    /// </summary>
+    public static readonly TimeSpan CopyOffset = TimeSpan.FromTicks(1);
+
+    /// <summary>
+    /// The resume point a stream just gave its movie, for the played-state pass that follows on
+    /// the same thread.
     /// </summary>
     [ThreadStatic]
     private static (Guid UserId, Guid PrimaryId, long Position, DateTime At)? _stopped;
@@ -79,7 +86,10 @@ public sealed class StreamUserDataSync(
             }
 
             var source = e.UserData;
-            data.LastPlayedDate = source.LastPlayedDate ?? data.LastPlayedDate;
+            // One tick after the stream: Jellyfin's resume query keeps one in-progress version per
+            // title and breaks a tie on the item id, so with equal dates Continue Watching showed
+            // the movie for some titles and the stream row for others.
+            data.LastPlayedDate = source.LastPlayedDate + CopyOffset ?? data.LastPlayedDate;
 
             // A start report sets no position: the stream's stored one is stale, and a stream that
             // fails before its first progress report would clear the movie's resume point.
@@ -100,9 +110,10 @@ public sealed class StreamUserDataSync(
 
             // Replaying a watched movie: the stream is watched too, so Jellyfin marks every other
             // version watched again right after this and resets their resume points, the movie's
-            // included. The stream's own point is kept, so it goes back onto the movie.
+            // included. It does so on every progress report as well as on stop, so the stream's
+            // own point goes back onto the movie after each of them.
             _stopped =
-                e.SaveReason is UserDataSaveReason.PlaybackFinished
+                e.SaveReason is not UserDataSaveReason.PlaybackStart
                 && source.Played
                 && source.PlaybackPositionTicks > 0
                     ? (e.UserId, primaryId, source.PlaybackPositionTicks, DateTime.UtcNow)

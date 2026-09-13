@@ -26,12 +26,9 @@ public sealed class ImageResourceFilter(
             ctx.ActionDescriptor
             is not ControllerActionDescriptor
             {
-                ActionName: "GetItemImage"
-                    or "GetItemImageByIndex"
-                    or "GetItemImage2"
-                    or "HeadItemImage"
-                    or "HeadItemImageByIndex"
-                    or "HeadItemImage2"
+                // HEAD requests share these action names; the Head* names in ImageController are
+                // route names.
+                ActionName: "GetItemImage" or "GetItemImageByIndex" or "GetItemImage2"
             }
         )
         {

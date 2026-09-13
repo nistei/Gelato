@@ -56,7 +56,11 @@ public sealed class PurgeGelatoStreamsTask(
             .ToArray();
 
         // Unlink them first: deleting a linked version makes Jellyfin save its movie once per row.
-        foreach (var group in streams.Where(v => v.PrimaryVersionId.HasValue).GroupBy(v => v.PrimaryVersionId!.Value))
+        foreach (
+            var group in streams
+                .Where(v => v.PrimaryVersionId.HasValue)
+                .GroupBy(v => v.PrimaryVersionId!.Value)
+        )
         {
             if (libraryManager.GetItemById(group.Key) is Video primary)
             {
@@ -72,6 +76,11 @@ public sealed class PurgeGelatoStreamsTask(
                 stream.SetPrimaryVersionId(null);
             }
         }
+
+        // Their watch state is on the movie/episode (StreamUserDataSync). Deleted items park their
+        // user data under their keys, which rows share with the movie, so clear it first instead
+        // of leaving a stale copy that could be handed to another item with the same keys.
+        manager.ForgetWatchState(streams, cancellationToken);
 
         var total = streams.Length;
 
