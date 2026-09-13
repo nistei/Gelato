@@ -37,8 +37,21 @@ public sealed class StreamUserDataSync(
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// The resume point a stopped stream just gave its movie, for the played-state pass that
+    /// follows on the same thread.
+    /// </summary>
+    [ThreadStatic]
+    private static (Guid UserId, Guid PrimaryId, long Position, DateTime At)? _stopped;
+
     private void OnUserDataSaved(object? sender, UserDataSaveEventArgs e)
     {
+        if (e.SaveReason is UserDataSaveReason.TogglePlayed)
+        {
+            RestoreResumePoint(e);
+            return;
+        }
+
         // Rows being deleted are unlinked first, so clearing their watch state is not copied.
         if (
             e.Item is not Video { PrimaryVersionId: { } primaryId } row
@@ -84,6 +97,16 @@ public sealed class StreamUserDataSync(
                 UserDataSaveReason.UpdateUserData,
                 CancellationToken.None
             );
+
+            // Replaying a watched movie: the stream is watched too, so Jellyfin marks every other
+            // version watched again right after this and resets their resume points, the movie's
+            // included. The stream's own point is kept, so it goes back onto the movie.
+            _stopped =
+                e.SaveReason is UserDataSaveReason.PlaybackFinished
+                && source.Played
+                && source.PlaybackPositionTicks > 0
+                    ? (e.UserId, primaryId, source.PlaybackPositionTicks, DateTime.UtcNow)
+                    : null;
         }
         catch (Exception ex)
         {
@@ -93,6 +116,42 @@ public sealed class StreamUserDataSync(
                 row.Id,
                 primaryId
             );
+        }
+    }
+
+    private void RestoreResumePoint(UserDataSaveEventArgs e)
+    {
+        if (
+            _stopped is not { } stopped
+            || e.Item.Id != stopped.PrimaryId
+            || e.UserId != stopped.UserId
+            || e.UserData is not { Played: true, PlaybackPositionTicks: 0 } data
+        )
+        {
+            return;
+        }
+
+        _stopped = null;
+        if (DateTime.UtcNow - stopped.At > TimeSpan.FromSeconds(5))
+            return;
+
+        try
+        {
+            if (userManager.GetUserById(e.UserId) is not { } user)
+                return;
+
+            data.PlaybackPositionTicks = stopped.Position;
+            userDataManager.SaveUserData(
+                user,
+                e.Item,
+                data,
+                UserDataSaveReason.UpdateUserData,
+                CancellationToken.None
+            );
+        }
+        catch (Exception ex)
+        {
+            log.LogWarning(ex, "Could not keep the resume point of {Id}", e.Item.Id);
         }
     }
 }
