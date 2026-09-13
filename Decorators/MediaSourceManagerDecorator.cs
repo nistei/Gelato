@@ -107,7 +107,20 @@ public sealed class MediaSourceManagerDecorator(
             || item.GetBaseItemKind() is not (BaseItemKind.Movie or BaseItemKind.Episode)
         )
         {
-            return _inner.GetStaticMediaSources(item, enablePathSubstitution, user);
+            var own = _inner.GetStaticMediaSources(item, enablePathSubstitution, user);
+
+            // A local movie keeps the stream rows linked while mixed mode was on. Jellyfin would
+            // list them with their stream URLs and without the per-user filter.
+            if (item is Video { LinkedAlternateVersions.Length: > 0 } localVideo)
+            {
+                var linkedStreams = GetStreamRowIds(GetStreamRows(localVideo));
+                if (linkedStreams.Count > 0)
+                {
+                    return own.Where(s => !linkedStreams.Contains(s.Id)).ToList();
+                }
+            }
+
+            return own;
         }
 
         // A stream row is one version of its movie/episode. Jellyfin 12's web client loads it as
@@ -201,24 +214,35 @@ public sealed class MediaSourceManagerDecorator(
 
         var itemId = item.Id.ToString("N", CultureInfo.InvariantCulture);
 
-        // A stream row is a version of its movie/episode and lists the same versions.
-        var primary = isStreamRow
-            ? video?.PrimaryVersionId is { } primaryVersionId
-                ? _libraryManager.GetItemById(primaryVersionId) as Video
-                : null
+        // A version, a stream row or a file merged in by hand, lists the versions of its movie.
+        var primary = video?.PrimaryVersionId is { } primaryVersionId
+            ? _libraryManager.GetItemById(primaryVersionId) as Video
             : video;
-        var streamRows = GetStreamRows(primary);
-        var streamRowIds = streamRows
-            .Select(r => r.Id.ToString("N", CultureInfo.InvariantCulture))
-            .ToHashSet();
+        var linkedVersions = primary is null
+            ? []
+            : _libraryManager.GetLinkedAlternateVersions(primary).ToList();
+        var streamRows = linkedVersions
+            .Where(v => v.HasStreamTag())
+            .OrderBy(v => v.GelatoData<int?>("index") ?? int.MaxValue)
+            .ToList();
+        var streamRowIds = GetStreamRowIds(streamRows);
 
         // Jellyfin lists the linked stream rows itself, named after the item; they are added
         // below with their stream names, and only the ones this user has. A stream row's own
-        // Jellyfin source is the row itself.
-        var sources = isStreamRow
+        // Jellyfin source is the row itself. A Gelato movie/episode has no media of its own, so
+        // unless versions were merged in by hand, Jellyfin's list is skipped: building it costs
+        // several queries per stream.
+        // A stream row of a local movie lists the movie's own file too.
+        var mediaOwner = isStreamRow ? primary : item;
+        var hasOwnMedia =
+            mediaOwner is not null
+            && (
+                !IsGelatoPlaybackItem(mediaOwner) || linkedVersions.Any(v => !v.HasStreamTag())
+            );
+        var sources = !hasOwnMedia
             ? []
             : _inner
-                .GetStaticMediaSources(item, enablePathSubstitution, user)
+                .GetStaticMediaSources(mediaOwner!, enablePathSubstitution, user)
                 .Where(s => !streamRowIds.Contains(s.Id))
                 .ToList();
 
@@ -309,23 +333,19 @@ public sealed class MediaSourceManagerDecorator(
     }
 
     /// <summary>
-    /// The stream rows linked to a movie/episode as its versions, in the order the addon
-    /// returned them.
+    /// The stream rows linked to a movie/episode as its versions. Read from the database: the
+    /// instance at hand may be a copy whose links are out of date.
     /// </summary>
-    private List<Video> GetStreamRows(Video? primary)
-    {
-        if (primary is null)
-            return [];
+    private List<Video> GetStreamRows(Video? primary) =>
+        primary is null
+            ? []
+            : _libraryManager
+                .GetLinkedAlternateVersions(primary)
+                .Where(v => v.HasStreamTag())
+                .ToList();
 
-        return primary
-            .LinkedAlternateVersions.Select(l =>
-                l.ItemId is { } id ? _libraryManager.GetItemById(id) : null
-            )
-            .OfType<Video>()
-            .Where(v => v.HasStreamTag())
-            .OrderBy(v => v.GelatoData<int?>("index") ?? int.MaxValue)
-            .ToList();
-    }
+    private static HashSet<string> GetStreamRowIds(IEnumerable<Video> rows) =>
+        rows.Select(r => r.Id.ToString("N", CultureInfo.InvariantCulture)).ToHashSet();
 
     /// <summary>
     /// Puts the stream the user is part way through first, so clients preselect it. The resume
@@ -441,12 +461,18 @@ public sealed class MediaSourceManagerDecorator(
         if (!IsGelatoPlaybackItem(owner))
         {
             // A local movie's linked stream rows are in Jellyfin's list too, with their real URLs.
-            // They are played through their own source id, which the branch below handles.
-            var streamRowIds = GetStreamRows(item as Video)
-                .Select(r => r.Id.ToString("N", CultureInfo.InvariantCulture))
-                .ToHashSet();
+            // They are played through their own source id, which the branch below handles. A file
+            // merged into a Gelato movie is asked for itself: Jellyfin would probe the movie's
+            // placeholder path otherwise.
+            var streamRowIds = GetStreamRowIds(GetStreamRows(item as Video));
             var playbackSources = await _inner
-                .GetPlaybackMediaSources(item, user, allowMediaProbe, enablePathSubstitution, ct)
+                .GetPlaybackMediaSources(
+                    IsGelatoPlaybackItem(item) ? owner : item,
+                    user,
+                    allowMediaProbe,
+                    enablePathSubstitution,
+                    ct
+                )
                 .ConfigureAwait(false);
             return playbackSources.Where(s => !streamRowIds.Contains(s.Id)).ToList();
         }
@@ -519,8 +545,12 @@ public sealed class MediaSourceManagerDecorator(
             (s.MediaStreams?.All(ms => ms.Type != MediaStreamType.Video) ?? true)
             || (s.RunTimeTicks ?? 0) < TimeSpan.FromMinutes(2).Ticks;
 
+        // Gelato's sources name their item in the ETag (the first stream carries the movie's id).
+        // Jellyfin's own, like a file merged in as a version, use the item's id.
         BaseItem ResolveOwnerFor(MediaSourceInfo s, BaseItem fallback) =>
-            Guid.TryParse(s.ETag, out var g) ? libraryManager.GetItemById(g) ?? fallback : fallback;
+            (Guid.TryParse(s.ETag, out var etag) ? libraryManager.GetItemById(etag) : null)
+            ?? (Guid.TryParse(s.Id, out var id) ? libraryManager.GetItemById(id) : null)
+            ?? fallback;
     }
 
     private static bool IsGelatoPlaybackItem(BaseItem item) =>

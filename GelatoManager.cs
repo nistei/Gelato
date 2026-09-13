@@ -483,6 +483,13 @@ public sealed class GelatoManager(
             return 0;
         }
 
+        // A version merged into another item: the streams belong to that item.
+        if (video.PrimaryVersionId is not null)
+        {
+            _log.LogDebug("SyncStreams: {Id} is a version of another item, skipping", video.Id);
+            return 0;
+        }
+
         var isEpisode = video is Episode;
         var parent = isEpisode ? video.GetParent() as Folder : TryGetMovieFolder(userId);
         if (parent is null)
@@ -548,9 +555,19 @@ public sealed class GelatoManager(
             //  IsVirtualItem = true,
         };
 
+        // A row is a version of one movie/episode. The same title can exist more than once, e.g. a
+        // local movie next to Gelato's, or per-user folders: each keeps rows of its own. Rows synced
+        // before they were linked, or whose movie is gone, are taken over.
         var existingStreamItems = repo.GetItemList(query)
             .OfType<Video>()
-            .Where(v => v.IsStream())
+            .Where(v =>
+                v.IsStream()
+                && (
+                    v.PrimaryVersionId is not { } owner
+                    || owner == video.Id
+                    || libraryManager.GetItemById(owner) is null
+                )
+            )
             .ToList();
 
         // Match stream rows by persisted Gelato guid, not by volatile playback URL/path.
@@ -617,7 +634,11 @@ public sealed class GelatoManager(
                             //Id = libraryManager.GetNewItemId(path, typeof(Movie))
                         };
                 streamItem.Path = path;
-                streamItem.Id = libraryManager.GetNewItemId(streamItem.Path, streamItem.GetType());
+                // Per movie/episode: another item of the same title gets its own row for the stream.
+                streamItem.Id = libraryManager.GetNewItemId(
+                    $"{path}#{video.Id:N}",
+                    streamItem.GetType()
+                );
             }
 
             streamItem.Tags = [StreamTag];
@@ -697,7 +718,7 @@ public sealed class GelatoManager(
         // Every row some user still has is a version of the movie/episode. Unlinking the rest
         // before they are deleted keeps Jellyfin from saving the movie once per deleted row.
         LinkVersions(video, existingByGuid.Values.Except(toDelete).ToList(), ct);
-        DeleteStreams(video, toDelete, ct);
+        DeleteStreamRows(video, toDelete, ct);
 
         upsertedStreams.Add(video);
 
@@ -752,8 +773,12 @@ public sealed class GelatoManager(
     /// Makes the given stream rows the linked alternate versions of their movie/episode, in the
     /// order the addon returned them.
     /// </summary>
-    private void LinkVersions(Video primary, IReadOnlyCollection<Video> rows, CancellationToken ct)
+    private void LinkVersions(Video video, IReadOnlyCollection<Video> rows, CancellationToken ct)
     {
+        // The links go onto the instance Jellyfin serves from its cache. A sync can run on a copy a
+        // list query loaded, and the cached instance would keep its old links.
+        var primary = libraryManager.GetItemById(video.Id) as Video ?? video;
+
         var rowIds = rows.Select(r => r.Id).ToHashSet();
         var linked = rows.Where(r => r.GelatoData<List<Guid>>("userIds") is { Count: > 0 })
             .OrderBy(r => r.GelatoData<int?>("index") ?? int.MaxValue)
@@ -763,33 +788,82 @@ public sealed class GelatoManager(
                 Type = MediaBrowser.Controller.Entities.LinkedChildType.LinkedAlternateVersion,
             });
 
-        // Keep versions merged in by hand next to the streams.
-        var others = primary.LinkedAlternateVersions.Where(l =>
-            l.ItemId is not { } id
-            || (!rowIds.Contains(id) && libraryManager.GetItemById(id)?.HasStreamTag() != true)
-        );
+        // Keep versions merged in by hand next to the streams. Read from the database, which the
+        // links of every instance end up in.
+        var stored = libraryManager.GetLinkedAlternateVersions(primary).ToList();
+        var others = stored
+            .Where(v => !rowIds.Contains(v.Id) && !v.HasStreamTag())
+            .Select(v => new LinkedChild
+            {
+                ItemId = v.Id,
+                Type = MediaBrowser.Controller.Entities.LinkedChildType.LinkedAlternateVersion,
+            });
 
         LinkedChild[] links = [.. others, .. linked];
+        var ids = links.Select(l => l.ItemId).ToList();
         if (
-            links
-                .Select(l => l.ItemId)
-                .SequenceEqual(primary.LinkedAlternateVersions.Select(l => l.ItemId))
+            ids.SequenceEqual(primary.LinkedAlternateVersions.Select(l => l.ItemId))
+            && stored.Select(v => (Guid?)v.Id).ToHashSet().SetEquals(ids)
         )
         {
             return;
         }
 
         primary.LinkedAlternateVersions = links;
+        if (!ReferenceEquals(primary, video))
+        {
+            video.LinkedAlternateVersions = links;
+        }
+
         // Straight to the database: UpdateToRepositoryAsync would also run the metadata savers,
         // which write .nfo files next to a local movie's media.
         persistence.SaveItems([primary], ct);
     }
 
     /// <summary>
-    /// Deletes stream rows no user has any more. Their watch state is already on the movie/episode
+    /// The stream rows of a movie/episode: the ones linked to it, and rows of its title that no item
+    /// has linked yet.
+    /// </summary>
+    public List<Video> GetStreamRows(Video primary)
+    {
+        var rows = libraryManager
+            .GetLinkedAlternateVersions(primary)
+            .Where(v => v.HasStreamTag())
+            .ToList();
+
+        if (primary.GetProviderId("Stremio") is { Length: > 0 } stremioId)
+        {
+            var unlinked = repo.GetItemList(
+                    new InternalItemsQuery
+                    {
+                        IncludeItemTypes = [primary.GetBaseItemKind()],
+                        HasAnyProviderId = new Dictionary<string, string>
+                        {
+                            { "Stremio", stremioId },
+                        },
+                        Tags = [StreamTag],
+                        Recursive = true,
+                        IsDeadPerson = true,
+                        IncludeOwnedItems = true,
+                    }
+                )
+                .OfType<Video>()
+                .Where(v => v.HasStreamTag() && v.PrimaryVersionId is null);
+            rows.AddRange(unlinked.Where(v => rows.All(r => r.Id != v.Id)));
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// Deletes stream rows. Their watch state is already on the movie/episode
     /// (StreamUserDataSync).
     /// </summary>
-    private void DeleteStreams(Video primary, IReadOnlyCollection<Video> rows, CancellationToken ct)
+    public void DeleteStreamRows(
+        Video primary,
+        IReadOnlyCollection<Video> rows,
+        CancellationToken ct
+    )
     {
         if (rows.Count == 0)
             return;
@@ -816,11 +890,11 @@ public sealed class GelatoManager(
             }
             catch (Exception ex)
             {
-                _log.LogWarning(ex, "Failed to delete stale stream {Id}", row.Id);
+                _log.LogWarning(ex, "Failed to delete stream {Id}", row.Id);
             }
         }
 
-        _log.LogDebug("Deleted {Count} stale stream(s) of {Id}", rows.Count, primary.Id);
+        _log.LogDebug("Deleted {Count} stream(s) of {Id}", rows.Count, primary.Id);
     }
 
     /// <summary>

@@ -132,31 +132,20 @@ public sealed class DtoServiceDecorator(
     /// </summary>
     private void CountStreamsAsOneSource(BaseItemDto dto, BaseItem item)
     {
-        // A stream row reports its movie's count.
-        if (dto.MediaSourceCount is > 1 && item.HasStreamTag())
-        {
-            dto.MediaSourceCount = null;
-            return;
-        }
-
-        if (dto.MediaSourceCount is not > 1 || item is not Video { PrimaryVersionId: null } video)
+        if (dto.MediaSourceCount is not > 1 || item is not Video video)
         {
             return;
         }
 
-        // A Gelato movie/episode only ever has stream rows linked. Jellyfin counts the links in
-        // the database by id, so this also covers items that are not the library's instance, like
-        // the ones search results are built from.
-        if (video.IsGelato())
-        {
-            dto.MediaSourceCount = null;
-            return;
-        }
-
-        var links = (libraryManager.GetItemById(video.Id) as Video ?? video).LinkedAlternateVersions;
-        var streams = links.Count(l =>
-            l.ItemId is { } id && libraryManager.GetItemById(id)?.HasStreamTag() == true
-        );
+        // A version reports its movie's count, like Jellyfin does. The links are counted in the
+        // database, as Jellyfin does: search results are built from new instances whose links are
+        // empty. Versions merged in by hand still count.
+        var owner = video.PrimaryVersionId is { } primaryId
+            ? libraryManager.GetItemById(primaryId) as Video
+            : video;
+        var streams = owner is null
+            ? 0
+            : libraryManager.GetLinkedAlternateVersions(owner).Count(v => v.HasStreamTag());
         if (streams == 0)
             return;
 
