@@ -8,6 +8,14 @@
     "owner": "lstb1t",
     "versions": [
       {
+        "version": "0.26.17.1008",
+        "targetAbi": "12.0.0.0",
+        "checksum": "afcf54e77ad25f243fb53841fec0ece2",
+        "sourceUrl": "https://github.com/nistei/Gelato/releases/download/dev-pr-3-v0.26.17.1008/gelato_0.26.17.1008.zip",
+        "timestamp": "2026-09-13T18:08:34Z",
+        "changelog": "Dev build of pull request 3 (`nistei:feat/native-alternate-versions`) at e23a653, channel `pr-3`.\n\n### Commits\n\n- fix: address second review of linked stream rows (e23a653)\n- fix: keep the resume point when replaying a watched movie on a stream (f0ed2cf)\n- fix: address review findings for stream versions (ba31652)\n- fix: no version count on Gelato movies in search results (bec2c5c)\n- feat: link stream rows as Jellyfin alternate versions (eea8a9c)\n"
+      },
+      {
         "version": "0.26.17.1007",
         "targetAbi": "12.0.0.0",
         "checksum": "9164ff27b40dbe11e839be2ba8d2b7f4",
