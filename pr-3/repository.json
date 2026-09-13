@@ -8,6 +8,14 @@
     "owner": "lstb1t",
     "versions": [
       {
+        "version": "0.26.17.1009",
+        "targetAbi": "12.0.0.0",
+        "checksum": "a71e9100629f4735824ebcd9b55e69d0",
+        "sourceUrl": "https://github.com/nistei/Gelato/releases/download/dev-pr-3-v0.26.17.1009/gelato_0.26.17.1009.zip",
+        "timestamp": "2026-09-13T19:29:35Z",
+        "changelog": "Dev build of pull request 3 (`nistei:feat/native-alternate-versions`) at d448667, channel `pr-3`.\n\n### Commits\n\n- fix: one writer per item for its stream rows (d448667)\n- feat: share watch state between a movie and its streams (12d32cf)\n- feat: show a stream row as its movie (2fe2883)\n- feat: link stream rows as Jellyfin alternate versions (3a19ecc)\n"
+      },
+      {
         "version": "0.26.17.1008",
         "targetAbi": "12.0.0.0",
         "checksum": "afcf54e77ad25f243fb53841fec0ece2",
