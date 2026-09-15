@@ -7,3 +7,6 @@ Release
 *.zip
 dist/
 *.sln.DotSettings.user
+**/__pycache__/
+*.pyc
+Test/e2e/.cache
