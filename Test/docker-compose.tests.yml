@@ -1,0 +1,28 @@
+# A bare Jellyfin 12.1 for the e2e test suite, with the Gelato build mounted straight from the
+# solution's default output. The runner sets the instance up (wizard, Gelato config, libraries,
+# a small catalog import) on its first run:
+#
+#   docker compose -f Test/docker-compose.tests.yml up -d
+#   python Test/e2e/run.py --container jf-tests --url http://localhost:8096 --adminuser admin --adminpassword secret --addon-url <addon URL>
+#   docker compose -f Test/docker-compose.tests.yml down -v      # throw the instance away
+#
+#   JF_TESTS_PORT  host port (default 8096)
+#
+# Build first: dotnet build Gelato.csproj -c Release. Jellyfin writes a meta.json into the mounted
+# folder on the first start, so the mount is not read-only.
+name: jf-tests
+
+services:
+  jellyfin:
+    image: jellyfin/jellyfin:12.1
+    container_name: jf-tests
+    ports:
+      - "${JF_TESTS_PORT:-8096}:8096"
+    volumes:
+      - config:/config
+      - cache:/cache
+      - ../bin/Release/net10.0:/config/plugins/Gelato
+
+volumes:
+  config:
+  cache:
