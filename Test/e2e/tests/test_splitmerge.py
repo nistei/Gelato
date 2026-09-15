@@ -1,0 +1,40 @@
+DESCRIPTION = "Split versions and merge versions from the movie menu: rows come back on the next visit"
+
+
+def run(t):
+    a, b = t.movie(), t.movie2()
+    # Rows in the database, not the cached source list: an earlier test may have deleted a row that
+    # the re-sync after the split brings back.
+    na, nb = t.db.stream_rows(a)["count"], t.db.stream_rows(b)["count"]
+    t.log(f"A {a[:8]} {na} rows, B {b[:8]} {nb} rows")
+    pv = lambda m: t.db.one("select lower(replace(PrimaryVersionId,'-','')) from BaseItems where lower(replace(Id,'-',''))=?", (m,))[0]
+
+    t.log("== split A")
+    t.api.delete(f"/Videos/{a}/AlternateSources")
+    r = t.db.stream_rows(a)
+    t.equal((r["unowned"], r["links"]), (na, 0), "after the split: rows unowned, links gone")
+    # The first request after the split triggers the sync; a page load then lists every stream.
+    t.api.post(f"/Items/{a}/PlaybackInfo?userId={t.api.user}", {"UserId": t.api.user})
+    r = t.db.stream_rows(a)
+    t.check(r["count"] >= na and r["owned"] == r["count"] and r["links"] == r["count"],
+            f"the first request after the split adopts and links the rows again: {r}")
+    na = r["count"]
+    t.equal(len(t.api.sources(a)), na, "the page lists every stream")
+
+    t.log("== merge B into A")
+    t.api.post(f"/Videos/MergeVersions?ids={a},{b}")
+    primary, other = (b, a) if pv(a) == b else (a, b)
+    t.check(pv(other) == primary, f"{other[:8]} became a version of {primary[:8]}")
+    srcs = t.api.sources(other)
+    t.log(f"merged page of {other[:8]}: {len(srcs)} sources")
+    t.check(len(srcs) >= na, "the merged page lists the streams of both")
+    t.check(t.db.stream_rows(other)["owned"] == len(t.db.row_users(other)), "the merged movie's own rows keep their owner")
+
+    t.log("== split again")
+    t.api.delete(f"/Videos/{primary}/AlternateSources")
+    t.check(pv(a) is None and pv(b) is None, "both are their own primary again")
+    for m in (a, b):
+        n = len(t.api.sources(m))
+        r = t.db.stream_rows(m)
+        t.check(n >= 2 and n == r["count"], f"{m[:8]} lists its streams again ({n})")
+        t.equal((r["owned"], r["unowned"], r["links"]), (n, 0, n), f"{m[:8]} rows owned and linked")
