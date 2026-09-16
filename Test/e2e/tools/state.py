@@ -1,6 +1,6 @@
 """One line per movie: what the page lists and what the database holds for its stream rows.
 
-    python t_state.py <movieId> [<movieId> ...] [--visit]
+    python tools/state.py <movieId> [<movieId> ...] [--visit]
 
 --visit opens each movie first (triggers the sync when the cache allows it).
 """

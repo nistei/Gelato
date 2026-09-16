@@ -20,15 +20,21 @@ SERIES_ITEMS = 1  # a series brings every season and episode; one is enough to s
 
 def wait_ready(base, log, timeout=180):
     """The server answers /System/Info/Public: not yet started (connection refused) or still
-    loading (503) are waited out. Returns the info, or None after the timeout."""
+    loading (503) are waited out. Returns the info, or None after the timeout.
+
+    Jellyfin 12 answers /System/Info/Public while it is still starting and every other endpoint
+    with a 503 page, so a guarded endpoint has to answer too: /Startup/Configuration is 200 before
+    the wizard and 401 after it, and 503 only while the server starts."""
     t0, waiting = time.time(), False
     while time.time() - t0 < timeout:
         try:
             st, d = Api(base).call("GET", "/System/Info/Public", timeout=10)
+            if st == 200 and isinstance(d, dict):
+                st = Api(base).call("GET", "/Startup/Configuration", timeout=10)[0]
+                if st not in (None, 503):
+                    return d
         except OSError:
             st, d = None, None
-        if st == 200 and isinstance(d, dict):
-            return d
         if not waiting:
             log(f"waiting for {base} ({'not reachable' if st is None else f'HTTP {st}'})")
             waiting = True
