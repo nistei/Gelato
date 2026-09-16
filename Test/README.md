@@ -105,6 +105,7 @@ def run(t):
 ### Environment
 
 - The instance has to run in Docker: the database is copied out with `docker cp` and `sh()` uses `docker exec`.
-- The webhook test listens on port 8765 on the host and needs the container to reach `host.docker.internal`.
+- The webhook test listens on port 8765 on the host, `searchfail` runs an addon proxy on port 8766; both need the
+  container to reach `host.docker.internal`.
 - Playback reports use fixed session ids, so a test can run while a real client plays, but not two runs at once
   against the same instance.
