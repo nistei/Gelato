@@ -59,6 +59,10 @@ def run(t):
     recs = t.api.get(f"/Movies/Recommendations?userId={u}&itemLimit=10&categoryLimit=6")
     rec_ids = [i["Id"].lower() for r in recs for i in r.get("Items", [])]
     t.check(not [i for i in rec_ids if i in rows_all], f"recommendations: no stream rows ({len(rec_ids)} items)")
+    # prod finding 6: the movie page's "Similar" listed the movie's own stream rows (JF 12 scores them on EF directly)
+    similar = [i["Id"].lower() for i in t.api.get(f"/Items/{movie}/Similar?userId={u}&limit=12").get("Items", [])]
+    t.check(not [i for i in similar if i in rows_all], f"similar to the movie: no stream rows ({len(similar)} items, can be few on a small library)")
+    t.check(movie not in similar, "similar to the movie: not the movie itself")
     if genre:
         listing(f"genre {genre}", f"/Items?userId={u}&IncludeItemTypes=Movie&Recursive=true&Genres={q(genre)}&Limit=2000", movie)
     if year:

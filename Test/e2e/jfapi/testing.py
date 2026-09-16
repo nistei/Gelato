@@ -117,7 +117,7 @@ def load_tests(tests_dir):
 
 
 ORDER = ["sync", "rowpage", "people", "seasons", "counts", "lists", "insert", "tasks", "catalogs", "play", "nextup", "users",
-         "concurrent", "playlist", "rowops", "splitmerge", "webhook", "race", "seriesdelete", "subrow", "upgrade", "scan", "subs", "peruser"]
+         "concurrent", "playlist", "rowops", "splitmerge", "webhook", "race", "seriesdelete", "subrow", "upgrade", "scan", "playsubs", "subs", "seriestrees", "peruser", "purgeall"]
 
 
 def run_test(name, module, ctx):
