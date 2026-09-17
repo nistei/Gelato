@@ -1,9 +1,8 @@
 DESCRIPTION = "Filter unreleased items hides no native items: libraries with local files, a collection and a playlist list the same with the filter on"
 DESTRUCTIVE = True  # adds two libraries with local files, turns the filter on; removes them again
 
-import urllib.parse
-
 from jfapi.bootstrap import GELATO
+from jfapi.native import add_library, remove_libraries, rows_under, write_videos
 
 LIBRARY = "jfapi-native"
 PATH = "/tmp/jfapi-native"
@@ -12,47 +11,26 @@ SHOWS = "jfapi-native-shows"
 SHOWS_PATH = "/tmp/jfapi-native-shows"
 SHOW = "Jfapi Native Show (2003)"
 EPISODES = [f"{SHOW}/Season 01/Jfapi Native Show S01E0{n}.mkv" for n in (1, 2)]
+LIBRARIES = [(LIBRARY, "movies", PATH), (SHOWS, "tvshows", SHOWS_PATH)]
 COLLECTION = "jfapi-native-collection"
 PLAYLIST = "jfapi-native-playlist"
-FFMPEG = "/usr/lib/jellyfin-ffmpeg/ffmpeg"
 
 
 def run(t):
     u = t.api.user
     api = t.api
     cfg = api.get(f"/Plugins/{GELATO}/Configuration")
-    for v in api.get("/Library/VirtualFolders"):
-        if v["Name"] in (LIBRARY, SHOWS):
-            api.delete(f"/Library/VirtualFolders?name={v['Name']}&refreshLibrary=false")
+    remove_libraries(t, LIBRARIES)
     for kind, name in (("BoxSet", COLLECTION), ("Playlist", PLAYLIST)):
         for i in api.get(f"/Items?userId={u}&IncludeItemTypes={kind}&Recursive=true").get("Items", []):
             if i["Name"] == name:
                 api.delete(f"/Items/{i['Id']}")
-
-    video = lambda f: (f"mkdir -p \"$(dirname '{f}')\" && {FFMPEG} -y -loglevel error -f lavfi "
-                       f"-i testsrc=duration=2:size=320x240:rate=10 -c:v libx264 '{f}'")
-    files = [f"{PATH}/{m}/{m}.mkv" for m in MOVIES] + [f"{SHOWS_PATH}/{e}" for e in EPISODES]
-    t.sh(f"rm -rf {PATH} {SHOWS_PATH} && " + " && ".join(video(f) for f in files))
-    t.equal(t.sh(f"ls {PATH}/*/*.mkv '{SHOWS_PATH}/{SHOW}'/*/*.mkv | wc -l").strip(), str(len(files)), "local video files written")
-
-    def add_library(name, kind, path, expect_type, expect_count):
-        api.post(f"/Library/VirtualFolders?name={name}&collectionType={kind}&paths={urllib.parse.quote(path, safe='')}&refreshLibrary=false",
-                 {"LibraryOptions": {"EnableRealtimeMonitor": False, "EnableInternetProviders": False}})
-        lib = next(v["ItemId"] for v in api.get("/Library/VirtualFolders") if v["Name"] == name)
-        api.post(f"/Items/{lib}/Refresh?Recursive=true&MetadataRefreshMode=Default&ImageRefreshMode=Default")
-        ids = []
-        for _ in range(60):
-            ids = [i["Id"].lower() for i in api.get(f"/Items?userId={u}&ParentId={lib}&IncludeItemTypes={expect_type}&Recursive=true").get("Items", [])]
-            if len(ids) == expect_count:
-                break
-            t.wait(2)
-        t.equal(len(ids), expect_count, f"native {expect_type} items scanned into {name}")
-        return lib, ids
+    write_videos(t, [f"{PATH}/{m}/{m}.mkv" for m in MOVIES] + [f"{SHOWS_PATH}/{e}" for e in EPISODES])
 
     boxset = pl = None
     try:
-        lib, native = add_library(LIBRARY, "movies", PATH, "Movie", len(MOVIES))
-        shows_lib, episodes = add_library(SHOWS, "tvshows", SHOWS_PATH, "Episode", len(EPISODES))
+        lib, native = add_library(t, LIBRARY, "movies", PATH, "Movie", len(MOVIES))
+        shows_lib, episodes = add_library(t, SHOWS, "tvshows", SHOWS_PATH, "Episode", len(EPISODES))
         if len(native) != len(MOVIES) or len(episodes) != len(EPISODES):
             return
         show = [i["Id"].lower() for i in api.get(f"/Items?userId={u}&ParentId={shows_lib}&IncludeItemTypes=Series&Recursive=true").get("Items", [])]
@@ -126,6 +104,5 @@ def run(t):
         for i in (boxset, pl):
             if i:
                 api.call("DELETE", f"/Items/{i}")
-        for name in (LIBRARY, SHOWS):
-            api.call("DELETE", f"/Library/VirtualFolders?name={name}&refreshLibrary=false")
-        t.sh(f"rm -rf {PATH} {SHOWS_PATH}")
+        remove_libraries(t, LIBRARIES)
+        t.equal(rows_under(t, [PATH, SHOWS_PATH]), 0, "native movies, series and episodes removed again")
