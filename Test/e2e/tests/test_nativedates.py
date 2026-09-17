@@ -13,11 +13,15 @@ SHOW = "Jfapi Dates Show (2003)"
 EPISODES = [f"{SHOW}/Season 01/Jfapi Dates Show S01E0{n}.mkv" for n in (1, 2)]
 
 
-def end_dates(t):
-    """{(type, name): EndDate} of the native items."""
-    return {(kind.rsplit(".", 1)[-1], name): end for kind, name, end in t.db.query(
-        "select Type, Name, EndDate from BaseItems where (Path like ? or Path like ?) and Type not like '%Folder'",
-        (MOVIES_PATH + "/%", SHOWS_PATH + "/%"))}
+def end_dates(t, own=None):
+    """{(type, name): EndDate} of the native items. `own` False keeps the ones Gelato does not own
+    (no Stremio id), True the ones it does; None every item."""
+    rows = t.db.query(
+        "select Type, Name, EndDate, exists(select 1 from BaseItemProviders p where p.ItemId=b.Id and lower(p.ProviderId)='stremio') "
+        "from BaseItems b where (Path like ? or Path like ?) and Type not like '%Folder'",
+        (MOVIES_PATH + "/%", SHOWS_PATH + "/%"))
+    return {(kind.rsplit(".", 1)[-1], name): end for kind, name, end, stremio in rows
+            if own is None or bool(stremio) == own}
 
 
 def run(t):
@@ -36,8 +40,17 @@ def run(t):
         t.api.post(f"/Items/{series[0]}", show)
         t.wait(2)
 
+        # The library scan is the second place an EndDate can land on a native item: Gelato's
+        # metadata providers answer for every item with an imdb or tmdb id, and build their result
+        # from a Gelato item, which always carries one.
+        ids = {t.api.item(m).get("Name"): sorted((t.api.item(m, "ProviderIds").get("ProviderIds") or {})) for m in movies}
+        t.check(any(("Imdb" in v or "Tmdb" in v) for v in ids.values()), f"a native movie has an id to look up: {ids}")
         before = end_dates(t)
         t.log("EndDate before the task:", before)
+        # The rule is about the items Gelato does not own, so an item that picked up a Stremio id
+        # along the way is left to the checks below rather than failing here.
+        scanned = end_dates(t, own=False)
+        t.equal(set(scanned.values()) or {None}, {None}, f"the scan leaves native EndDate empty: {scanned}")
         status, msg = t.api.run_task(TASK, timeout=1800)
         t.equal(status, "Completed", f"sync release dates {msg}")
         after = end_dates(t)
