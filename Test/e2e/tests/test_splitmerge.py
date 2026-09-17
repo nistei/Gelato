@@ -28,7 +28,10 @@ def run(t):
     srcs = t.api.sources(other)
     t.log(f"merged page of {other[:8]}: {len(srcs)} sources")
     t.check(len(srcs) >= na, "the merged page lists the streams of both")
-    t.check(t.db.stream_rows(other)["owned"] == len(t.db.row_users(other)), "the merged movie's own rows keep their owner")
+    # Jellyfin 12.1 makes every linked version of a merged movie a version of the primary when it
+    # saves the primary (ItemPersistenceService sets PrimaryVersionId), so the rows move with it.
+    owners = {owner for _, owner, _, _ in t.db.row_users(other).values()}
+    t.equal(owners, {primary}, "the merged movie's rows are versions of the primary")
 
     t.log("== split again")
     t.api.delete(f"/Videos/{primary}/AlternateSources")

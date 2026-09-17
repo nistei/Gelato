@@ -76,8 +76,11 @@ class Db:
         return rows[0] if rows else None
 
     def sh(self, cmd):
-        """A shell command inside the container."""
-        return subprocess.run(["docker", "exec", self.container, "sh", "-c", cmd], capture_output=True, text=True).stdout
+        """A shell command inside the container. Its output is decoded as UTF-8: with the default
+        (the Windows code page) one file name with a non-ASCII character fails the reader thread and
+        the output comes back as None."""
+        return subprocess.run(["docker", "exec", self.container, "sh", "-c", cmd], capture_output=True, text=True,
+                              encoding="utf-8", errors="replace").stdout
 
     # ---- Gelato specifics
 
