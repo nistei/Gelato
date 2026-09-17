@@ -116,8 +116,8 @@ def load_tests(tests_dir):
     return {n: importlib.import_module(f"tests.test_{n}") for n in names}
 
 
-ORDER = ["sync", "rowpage", "people", "seasons", "counts", "lists", "insert", "tasks", "catalogs", "searchfail", "unreleased", "play", "nextup", "users",
-         "concurrent", "searchrace", "playlist", "rowops", "splitmerge", "webhook", "race", "seriesdelete", "subrow", "upgrade", "scan", "playsubs", "subs", "seriestrees", "embeddedtitles", "trickplay", "chapters", "peruser", "purgeall"]
+ORDER = ["sync", "rowpage", "people", "seasons", "counts", "lists", "insert", "tasks", "catalogs", "searchfail", "unreleased", "nativedates", "play", "nextup", "users",
+         "concurrent", "searchrace", "playlist", "rowops", "splitmerge", "webhook", "race", "seriesdelete", "subrow", "upgrade", "scan", "localtreescan", "playsubs", "subs", "seriestrees", "localtreetag", "embeddedtitles", "trickplay", "chapters", "peruser", "purgeall"]
 
 
 def run_test(name, module, ctx):
