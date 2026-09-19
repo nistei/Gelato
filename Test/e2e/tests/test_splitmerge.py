@@ -3,10 +3,20 @@ DESCRIPTION = "Split versions and merge versions from the movie menu: rows come 
 
 def run(t):
     a, b = t.movie(), t.movie2()
-    # Rows in the database, not the cached source list: an earlier test may have deleted a row that
-    # the re-sync after the split brings back.
-    na, nb = t.db.stream_rows(a)["count"], t.db.stream_rows(b)["count"]
+
+    def rows(movie):
+        """Stream rows in the database, not the cached source list: an earlier test may have deleted
+        a row, and the purge in test_playlist leaves every movie it did not re-sync without any. A
+        visit syncs them again, so both sides of the merge have rows of their own."""
+        n = t.db.stream_rows(movie)["count"]
+        if n == 0:
+            t.api.sources(movie)
+            n = t.db.stream_rows(movie)["count"]
+        return n
+
+    na, nb = rows(a), rows(b)
     t.log(f"A {a[:8]} {na} rows, B {b[:8]} {nb} rows")
+    t.check(na > 0 and nb > 0, "both movies have stream rows before the merge")
     pv = lambda m: t.db.one("select lower(replace(PrimaryVersionId,'-','')) from BaseItems where lower(replace(Id,'-',''))=?", (m,))[0]
 
     t.log("== split A")

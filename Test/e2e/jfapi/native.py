@@ -84,13 +84,22 @@ def season_numbers(t, series_id):
 
 def open_local_series(t, series_id, local_episodes=1, timeout=120):
     """Opens the series page, which extends the tree when the option is on, and returns the episode
-    tree once it grew past the local episodes (or after the timeout)."""
+    tree once it stopped growing (or after the timeout).
+
+    The tree has to settle before it is compared with anything: for a moment after the scan the local
+    episode is listed under its file name with no season and episode number (prod finding 17), so it
+    counts as an entry of its own next to the Gelato episode of the same slot and a snapshot taken
+    then holds one entry more than the finished tree (seen as a 81 -> 80 "the scan removed an
+    episode" failure). The tree counts as settled when it is past the local episodes, has no entry
+    without numbers, and two polls agree on its size."""
     t.api.item(series_id)
-    waited = 0
+    waited, size = 0, None
     while waited < timeout:
-        if len(episode_tree(t, series_id)) > local_episodes:
-            t.wait(5)  # seasons are saved before their episodes
-            break
+        tree = episode_tree(t, series_id)
+        settled = len(tree) > local_episodes and all(s is not None and e is not None for s, e in tree)
+        if settled and len(tree) == size:
+            return tree
+        size = len(tree) if settled else None
         t.wait(3)
         waited += 3
     return episode_tree(t, series_id)

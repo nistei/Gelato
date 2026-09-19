@@ -68,7 +68,10 @@ def main():
     args = p.parse_args()
 
     os.environ.setdefault("PYTHONUTF8", "1")
-    sys.stdout.reconfigure(line_buffering=True)  # progress shows up when the output is a file or pipe
+    # UTF-8: names and paths in the notes carry non-ASCII characters, and printing one to a
+    # redirected stdout raised UnicodeEncodeError on the Windows code page (test_subs died on
+    # the message of a failing check). line_buffering: progress shows up in a file or a pipe.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
     tests = load_tests(os.path.join(HERE, "tests"))
     if args.tests == ["list"]:
         for name, mod in tests.items():
