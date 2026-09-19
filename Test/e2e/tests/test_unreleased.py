@@ -1,7 +1,9 @@
-DESCRIPTION = "Filter unreleased items hides no native items: libraries with local files, a collection and a playlist list the same with the filter on"
+DESCRIPTION = "Filter unreleased items: no native item is hidden, and a Gelato item without a known release stays out of every listing shape and out of the search results"
 DESTRUCTIVE = True  # adds two libraries with local files, turns the filter on; removes them again
 
-from jfapi.bootstrap import GELATO
+import urllib.parse
+
+from jfapi.bootstrap import GELATO, MOVIE_PATH
 from jfapi.native import add_library, remove_libraries, rows_under, write_videos
 
 LIBRARY = "jfapi-native"
@@ -90,13 +92,82 @@ def run(t):
             t.check(not missing, f"filter on, {label}: {len(set(expect) & on[label])}/{len(expect)} expected items")
 
         # The filter must still do its job for Gelato items without a known release.
-        unreleased = {r[0] for r in t.db.query(
-            "select lower(replace(Id,'-','')) from BaseItems where Type like '%Movies.Movie' and (Tags is null or Tags not like '%gelato-stream%') "
-            "and Path not like ? and EndDate > datetime('now', '+1 day')", (PATH + "/%",))}
+        rows = t.db.query(
+            "select lower(replace(b.Id,'-','')), b.Name, b.ProductionYear from BaseItems b "
+            "join BaseItemProviders p on p.ItemId=b.Id and lower(p.ProviderId)='stremio' "
+            "where b.Type like '%Movies.Movie' and (b.Tags is null or b.Tags not like '%gelato-stream%') "
+            "and b.PrimaryVersionId is null and b.EndDate > datetime('now', '+1 day')")
+        unreleased = {r[0] for r in rows}
         movies_on = {i["Id"].lower() for i in api.get(f"/Items?userId={u}&IncludeItemTypes=Movie&Recursive=true&Limit=5000").get("Items", [])}
         t.log(f"Gelato movies with a future EndDate: {len(unreleased)}")
-        if unreleased:
-            t.check(not (unreleased & movies_on), f"filter on: Gelato movies with a future EndDate stay hidden ({len(unreleased & movies_on)} listed)")
+        if not unreleased:
+            return
+        t.check(not (unreleased & movies_on), f"filter on: Gelato movies with a future EndDate stay hidden ({len(unreleased & movies_on)} listed)")
+
+        # A listing is not always the recursive query the web client sends for a library view:
+        # Jellyfin answers a non-recursive ParentId request from the folder's children and
+        # /Search/Hints from the search manager. An unreleased item has to stay out of all of them.
+        gelato_lib = next((v["ItemId"].lower() for v in api.get("/Library/VirtualFolders")
+                           if MOVIE_PATH in (v.get("Locations") or [])), None)
+        shapes = {
+            "all movies": f"/Items?userId={u}&IncludeItemTypes=Movie&Recursive=true&Limit=5000",
+            "no types, recursive": f"/Items?userId={u}&Recursive=true&Limit=5000",
+        }
+        if gelato_lib:
+            shapes.update({
+                "library, recursive": f"/Items?userId={u}&ParentId={gelato_lib}&IncludeItemTypes=Movie&Recursive=true&Limit=5000",
+                "library, flat": f"/Items?userId={u}&ParentId={gelato_lib}&Limit=5000",
+                "library, flat, Movie": f"/Items?userId={u}&ParentId={gelato_lib}&IncludeItemTypes=Movie&Limit=5000",
+                "library, sorted": f"/Items?userId={u}&ParentId={gelato_lib}&SortBy=SortName&Limit=5000",
+            })
+        else:
+            t.log(f"no Gelato movie library on {MOVIE_PATH}, listing shapes limited to the whole library")
+
+        def shape_ids():
+            out = {}
+            for label, path in shapes.items():
+                d = api.get(path)
+                out[label] = {i["Id"].lower() for i in (d if isinstance(d, list) else d.get("Items", []))}
+            return out
+
+        on_ids = shape_ids()
+        for label, listed in on_ids.items():
+            leaked = unreleased & listed
+            t.log(f"filter on, {label}: {len(listed)} items, {len(leaked)} unreleased")
+            t.check(not leaked, f"filter on, {label}: no Gelato movie with a future EndDate is listed ({len(leaked)} listed)")
+
+        # Turning the filter off has to bring the items back everywhere. Jellyfin caches a folder's
+        # children in memory after the first request that reads them, so a listing filtered on the
+        # way into that cache stays short for the rest of the server's life.
+        api.post(f"/Plugins/{GELATO}/Configuration", {**cfg, "FilterUnreleased": False, "FilterUnreleasedBufferDays": 0})
+        off_ids = shape_ids()
+        for label, listed in off_ids.items():
+            missing = unreleased - listed
+            t.log(f"filter off again, {label}: {len(listed)} items (on: {len(on_ids[label])}), {len(missing)} unreleased missing")
+            t.check(not missing, f"filter off again, {label}: every Gelato movie with a future EndDate is listed again ({len(missing)} missing)")
+        api.post(f"/Plugins/{GELATO}/Configuration", {**cfg, "FilterUnreleased": True, "FilterUnreleasedBufferDays": 0})
+
+        # Search: /Search/Hints lists library rows, /Items?searchTerm is answered by the addon
+        # search instead. Neither may offer an item the library view hides.
+        name, year = rows[0][1], rows[0][2]
+        term = urllib.parse.quote(name)
+        hints = {h["Id"].lower() for h in api.get(f"/Search/Hints?userId={u}&searchTerm={term}&limit=50").get("SearchHints", [])}
+        t.log(f"filter on, search hints for {name!r}: {len(hints)} hints, unreleased {sorted(unreleased & hints)}")
+        t.check(not (unreleased & hints), f"filter on, search hints for {name!r}: the unreleased movie is not offered")
+
+        def searched():
+            return [i for i in api.get(f"/Items?userId={u}&searchTerm={term}&Recursive=true&IncludeItemTypes=Movie&Limit=50").get("Items", [])
+                    if i.get("Name") == name and i.get("ProductionYear") == year]
+
+        api.post(f"/Plugins/{GELATO}/Configuration", {**cfg, "FilterUnreleased": False, "FilterUnreleasedBufferDays": 0})
+        offered_off = searched()
+        api.post(f"/Plugins/{GELATO}/Configuration", {**cfg, "FilterUnreleased": True, "FilterUnreleasedBufferDays": 0})
+        offered_on = searched()
+        t.log(f"addon search for {name!r} ({year}): {len(offered_off)} result(s) with the filter off, {len(offered_on)} with it on")
+        if offered_off:
+            t.check(not offered_on, f"filter on, addon search for {name!r}: the unreleased movie is not offered ({len(offered_on)} result(s))")
+        else:
+            t.log(f"the addon does not return {name!r} at all, addon search not covered")
     finally:
         api.post(f"/Plugins/{GELATO}/Configuration", {**api.get(f"/Plugins/{GELATO}/Configuration"),
                                                       "FilterUnreleased": cfg.get("FilterUnreleased", False),
