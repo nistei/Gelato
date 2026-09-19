@@ -148,22 +148,19 @@ def run(t):
         api.post(f"/Plugins/{GELATO}/Configuration", {**cfg, "FilterUnreleased": True, "FilterUnreleasedBufferDays": 0})
 
         # Everything above reads the unreleased set out of EndDate, so it only proves that the
-        # exclusion does what EndDate says — a rule that writes the wrong EndDate passes it. Tie the
-        # filter to something the database does not decide: a movie that premiered a month ago is
-        # out, whatever its EndDate says, and has to stay listed.
-        premiered = t.db.query(
-            "select lower(replace(b.Id,'-','')), b.Name, date(b.PremiereDate), date(b.EndDate) from BaseItems b "
-            "join BaseItemProviders p on p.ItemId=b.Id and lower(p.ProviderId)='stremio' "
-            "where b.Type like '%Movies.Movie' and (b.Tags is null or b.Tags not like '%gelato-stream%') "
-            "and b.PrimaryVersionId is null and b.PremiereDate < datetime('now', '-30 day') "
-            "order by b.PremiereDate desc limit 200")
-        listed = {i["Id"].lower() for i in api.get(f"/Items?userId={u}&IncludeItemTypes=Movie&Recursive=true&Limit=5000").get("Items", [])}
-        hidden = [r for r in premiered if r[0] not in listed]
-        t.log(f"Gelato movies that premiered over 30 days ago: {len(premiered)}, hidden with the filter on: {len(hidden)}")
-        for item_id, nm, premiere, end in hidden[:10]:
-            t.log(f"  hidden: {nm} premiered {premiere}, EndDate {end}")
-        if premiered:
-            t.check(not hidden, f"filter on: a Gelato movie that premiered over 30 days ago stays listed ({len(hidden)} of {len(premiered)} hidden)")
+        # exclusion does what EndDate says. test_releasedates checks the dates themselves against
+        # TMDB. What belongs here is the buffer: it hides an item for that many days after its
+        # release, so a larger buffer can only ever hide more, never reveal something.
+        counts, hidden_at = {}, {}
+        for bd in (0, 30, 120):
+            api.post(f"/Plugins/{GELATO}/Configuration", {**cfg, "FilterUnreleased": True, "FilterUnreleasedBufferDays": bd})
+            listed = {i["Id"].lower() for i in api.get(f"/Items?userId={u}&IncludeItemTypes=Movie&Recursive=true&Limit=5000").get("Items", [])}
+            counts[bd], hidden_at[bd] = len(listed), listed
+        t.log("movies listed per buffer:", counts)
+        for small, large in ((0, 30), (30, 120)):
+            revealed = hidden_at[large] - hidden_at[small]
+            t.check(not revealed, f"buffer {large} lists nothing that buffer {small} hides ({len(revealed)} revealed)")
+        api.post(f"/Plugins/{GELATO}/Configuration", {**cfg, "FilterUnreleased": True, "FilterUnreleasedBufferDays": 0})
 
         # Search: /Search/Hints lists library rows, /Items?searchTerm is answered by the addon
         # search instead. Neither may offer an item the library view hides.
