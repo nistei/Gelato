@@ -34,7 +34,8 @@ class TmdbOnlyAddon:
             self.upstream = self.upstream[: -len("/manifest.json")]
         self.url = f"http://host.docker.internal:{port}"
         self.tmdb_of, self.imdb_of = ids  # tt id -> tmdb: id, and back
-        self.calls = Counter()  # "meta imdb" (404ed), "meta tmdb" (served)
+        # per requested id, so the library's background work on other items does not count
+        self.by_imdb, self.by_tmdb = Counter(), Counter()  # 404ed, and served
         outer = self
 
         def fetch(path):
@@ -74,11 +75,11 @@ class TmdbOnlyAddon:
 
                 if mid is not None and mid.startswith("tt"):
                     # what a meta addon that only takes tmdb: ids does with an IMDb id
-                    outer.calls["meta imdb"] += 1
+                    outer.by_imdb[mid] += 1
                     return self.answer(404, b'{"err": "not found"}', "application/json")
 
                 if mid is not None and mid in outer.imdb_of:
-                    outer.calls["meta tmdb"] += 1
+                    outer.by_tmdb[mid] += 1
                     tt = outer.imdb_of[mid]
                     status, body, ctype = fetch("/".join(parts[:3]) + "/" + urllib.parse.quote(tt) + ".json")
                     if status == 200:
@@ -147,7 +148,7 @@ def run(t):
 
         def round_(proxy, label, taken):
             """Points Gelato at the proxy, opens a fresh search result, and returns how often the
-            addon was asked for a meta by IMDb id while it was opened."""
+            addon was asked for the result's IMDb id while it was opened."""
             t.api.post("/Plugins/" + GELATO + "/Configuration",
                        {**t.api.get("/Plugins/" + GELATO + "/Configuration"), "Url": proxy.url})
             hit, tmdb = fresh_hit(taken)
@@ -159,16 +160,16 @@ def run(t):
             # The result's stub path carries the catalog id (the tmdb: one); the item it becomes
             # keeps the result's imdb_id as its Stremio id, so the library is asked about both.
             t.log(f"{label}: {hit['Name']}, id {tmdb}, imdb_id {imdb}, path {hit.get('Path')}")
-            t.equal(proxy.calls["meta imdb"], 0, f"{label}: the search itself asked for no meta by IMDb id")
+            t.equal(proxy.by_imdb[imdb], 0, f"{label}: the search itself asked for no meta by {imdb}")
 
-            proxy.calls.clear()
             st, d = t.api.call("GET", f"/Items/{hit['Id']}?userId={t.api.user}", timeout=90)
+            asked = (proxy.by_imdb[imdb], proxy.by_tmdb[tmdb])
             inserted = d.get("Id", "").lower() if isinstance(d, dict) else None
-            t.log(f"{label}: opening it answered HTTP {st}, meta calls {dict(proxy.calls)}")
+            t.log(f"{label}: opening it answered HTTP {st}, asked for {imdb} {asked[0]}x (404), for {tmdb} {asked[1]}x")
             t.equal(st, 200, f"{label}: opening the result answers")
-            t.check(proxy.calls["meta tmdb"] >= 1, f"{label}: the meta was fetched with the tmdb: id ({dict(proxy.calls)})")
+            t.check(asked[1] >= 1, f"{label}: the meta was fetched with {tmdb} ({asked[1]}x)")
             if not t.check(bool(inserted) and inserted != hit["Id"].lower(), f"{label}: the click inserted the movie under a library id"):
-                return None
+                return asked[0]
             try:
                 t.equal(d.get("Type"), "Movie", f"{label}: the inserted item is a movie")
                 t.check(d.get("Name"), f"{label}: it has a name ({d.get('Name')})")
@@ -178,7 +179,7 @@ def run(t):
             finally:
                 t.api.delete(f"/Items/{inserted}")
                 t.equal(in_library(imdb) + in_library(tmdb), 0, f"{label}: the movie was removed again")
-            return proxy.calls["meta imdb"]
+            return asked[0]
 
         taken = set()
         try:
