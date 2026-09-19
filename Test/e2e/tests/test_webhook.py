@@ -45,8 +45,14 @@ class Listener:
 
 
 def run(t):
-    if not any(p.get("Id", "").replace("-", "").lower() == WEBHOOK.replace("-", "") for p in t.api.get("/Plugins")):
+    plugin = next((p for p in t.api.get("/Plugins")
+                   if p.get("Id", "").replace("-", "").lower() == WEBHOOK.replace("-", "")), None)
+    if plugin is None:
         t.skip("Webhook plugin not installed (POST /Packages/Installed/Webhook?assemblyGuid=71552a5a-5c5c-4350-a2ae-ebe451a30173, then restart)")
+    # A disabled plugin is listed but not loaded, so its configuration endpoint answers 404 (prod has
+    # it off, so every instance from the dump starts that way).
+    if plugin.get("Status") != "Active":
+        t.skip(f"Webhook plugin is {plugin.get('Status')}: enable it in the dashboard and restart")
     listener = Listener()
     try:
         if "ok" not in t.sh(f"curl -s -m 5 http://host.docker.internal:{PORT}/ && echo ok"):
