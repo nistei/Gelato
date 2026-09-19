@@ -1,6 +1,6 @@
 """Brings an empty Jellyfin instance to the state the tests need: startup wizard done, Gelato
-configured against the addon with one small movie catalog and one small series catalog, the two
-libraries on Gelato's folders, a library scan, one catalog import.
+configured against the addon with one small movie catalog and one small series catalog, both of them
+creating a collection, the two libraries on Gelato's folders, a library scan, one catalog import.
 
 Nothing is installed: Gelato (and the optional Webhook plugin) must be in the container's plugin
 folder already, e.g. mounted from a build.
@@ -91,7 +91,11 @@ def setup(api, db, addon_url, log):
         c = next((c for c in catalogs if c.get("type") == kind and not needs_query(c)), None)
         if c:
             chosen.append({"Id": c["id"], "Type": kind, "Name": c.get("name") or c["id"], "Enabled": True,
-                           "MaxItems": CATALOG_ITEMS if kind == "movie" else SERIES_ITEMS, "CreateCollection": False, "Url": ""})
+                           "MaxItems": CATALOG_ITEMS if kind == "movie" else SERIES_ITEMS,
+                           # The import creates a collection per catalog, as a configured instance does:
+                           # without one a fresh instance has no Gelato BoxSet and never covers what
+                           # happens to collections (test_purgeall, prod finding 18).
+                           "CreateCollection": True, "Url": ""})
     cfg.update({"Url": addon_url, "MoviePath": MOVIE_PATH, "SeriesPath": SERIES_PATH, "Catalogs": chosen, "CatalogMaxItems": CATALOG_ITEMS})
     api.post(f"/Plugins/{GELATO}/Configuration", cfg)
     log(f"Gelato configured: addon set, catalogs {[(c['Name'], c['MaxItems']) for c in chosen]}")
@@ -116,7 +120,9 @@ def setup(api, db, addon_url, log):
     api.wait_tasks_idle("RefreshLibrary", 1800)
     movies = db.one("select count(*) from BaseItems where Type like '%Movies.Movie' and (Tags is null or Tags not like '%gelato-stream%')")[0]
     series = db.one("select count(*) from BaseItems where Type like '%TV.Series'")[0]
-    log(f"catalog import {status} {msg}: {movies} movies, {series} series in the library")
+    boxsets = db.one("select count(*) from BaseItems b where b.Type like '%BoxSet' and exists "
+                     "(select 1 from BaseItemProviders p where p.ItemId=b.Id and lower(p.ProviderId)='stremio')")[0]
+    log(f"catalog import {status} {msg}: {movies} movies, {series} series, {boxsets} collection(s) in the library")
     settle(db, log)
 
 
