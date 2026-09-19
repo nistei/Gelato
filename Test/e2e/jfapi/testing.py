@@ -117,7 +117,7 @@ def load_tests(tests_dir):
 
 
 ORDER = ["sync", "rowpage", "people", "seasons", "counts", "lists", "insert", "tasks", "catalogs", "searchfail", "unreleased", "nativedates", "play", "nextup", "users",
-         "concurrent", "searchrace", "playlist", "rowops", "splitmerge", "webhook", "race", "seriesdelete", "subrow", "upgrade", "scan", "localtreescan", "playsubs", "subs", "seriestrees", "localtreetag", "embeddedtitles", "trickplay", "chapters", "peruser", "purgeall"]
+         "concurrent", "searchrace", "playlist", "rowops", "splitmerge", "webhook", "race", "seriesdelete", "subrow", "upgrade", "scan", "localtreescan", "playsubs", "subs", "seriestrees", "lockmeta", "localtreetag", "embeddedtitles", "trickplay", "chapters", "peruser", "purgeall"]
 
 
 def run_test(name, module, ctx):

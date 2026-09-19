@@ -11,6 +11,7 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import time
 
 CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".cache", "db")
 CONTAINER = os.environ.get("JF_CONTAINER", "")
@@ -68,6 +69,9 @@ class Db:
                 self._fresh = False  # take a new copy, not the unreadable one again
                 if attempt == 2:
                     raise
+                # Three copies in a row can all land in the middle of the same write (an insert
+                # from search writes for a while), so give the server a moment.
+                time.sleep(1)
             finally:
                 con.close()
 
