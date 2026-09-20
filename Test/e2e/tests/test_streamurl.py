@@ -57,5 +57,12 @@ def run(t):
     pi = t.api.post(f"/Items/{movie}/PlaybackInfo?userId={t.api.user}", {"UserId": t.api.user, "MediaSourceId": row})
     src = next((s for s in pi.get("MediaSources") or [] if s["Id"] == row), None)
     if t.check(src is not None and not pi.get("ErrorCode"), f"PlaybackInfo offers the row to play ({pi.get('ErrorCode')})"):
-        st, _, body = t.api.request(f"/Videos/{movie}/stream?static=true&mediaSourceId={row}", {"Range": "bytes=0-0"}, max_bytes=1)
-        t.check(st in (200, 206) and len(body) == 1, f"the stream endpoint still delivers bytes for the stubbed source ({st})")
+        # Both stream routes: /stream is GetVideoStream, /stream.{container} is
+        # GetVideoStreamByContainer, a separate action that delegates to the first one. The
+        # issue's own proof that masking did not break playback used the container form.
+        for route in ("stream", "stream.mkv"):
+            st, _, body = t.api.request(f"/Videos/{movie}/{route}?static=true&mediaSourceId={row}", {"Range": "bytes=0-0"}, max_bytes=1)
+            t.check(st in (200, 206) and len(body) == 1, f"/Videos/{{id}}/{route} still delivers bytes for the stubbed source ({st})")
+        # A stream row is opened by its own id from a version page.
+        st, _, body = t.api.request(f"/Videos/{row}/stream.mkv?static=true&mediaSourceId={row}", {"Range": "bytes=0-0"}, max_bytes=1)
+        t.check(st in (200, 206) and len(body) == 1, f"a stream row delivers bytes under its own id ({st})")
