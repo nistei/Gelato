@@ -116,7 +116,7 @@ def load_tests(tests_dir):
     return {n: importlib.import_module(f"tests.test_{n}") for n in names}
 
 
-ORDER = ["sync", "rowpage", "images", "deadimage", "people", "seasons", "counts", "lists", "insert", "useractions", "tasks", "catalogs", "searchfail", "searchtypes", "metaid", "canonicalid", "unreleased", "releasedates", "nativedates", "play", "nextup", "users",
+ORDER = ["sync", "rowpage", "images", "deadimage", "people", "seasons", "counts", "lists", "insert", "useractions", "tasks", "catalogs", "searchfail", "searchtypes", "metaid", "canonicalid", "unreleased", "releasedates", "nativedates", "play", "streamurl", "nextup", "users",
          "concurrent", "searchrace", "playlist", "rowops", "apikeydownload", "splitmerge", "webhook", "race", "seriesdelete", "subrow", "upgrade", "scan", "localtreescan", "playsubs", "subs", "seriestrees", "lockmeta", "localtreetag", "localtreeclean", "embeddedtitles", "trickplay", "chapters", "peruser", "purgeall"]
 
 

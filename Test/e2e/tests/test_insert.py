@@ -64,7 +64,10 @@ def run(t):
 
     def play(item, label):
         srcs = t.api.item(item).get("MediaSources") or []
-        t.check(len(srcs) >= 1 and all(s.get("Path", "").startswith("http") for s in srcs), f"{label}: {len(srcs)} playable streams right away")
+        # The DTO stubs the addon URL, so the streams are counted, not read: what proves they
+        # resolve is the stream endpoint below.
+        t.check(len(srcs) >= 1 and all(s.get("SupportsDirectPlay") or s.get("SupportsDirectStream") for s in srcs),
+                f"{label}: {len(srcs)} playable streams right away")
         # PlaybackInfo hands out a stub path on purpose (clients stream through Jellyfin, which
         # resolves the URL), so the proof is the stream endpoint itself: the first byte.
         pi = t.api.post(f"/Items/{item}/PlaybackInfo?userId={t.api.user}", {"UserId": t.api.user})
