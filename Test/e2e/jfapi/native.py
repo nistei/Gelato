@@ -20,6 +20,15 @@ def write_videos(t, paths, seconds=2):
     t.equal(len(written), len(paths), "local video files written")
 
 
+def write_audio(t, paths, seconds=2):
+    """Writes a short test track to every path (folders are created)."""
+    cmds = [f"mkdir -p \"$(dirname '{p}')\" && {FFMPEG} -y -loglevel error -f lavfi "
+            f"-i sine=frequency=440:duration={seconds} -c:a libmp3lame '{p}'" for p in paths]
+    t.sh(" && ".join(cmds))
+    written = t.sh("for f in " + " ".join(f"'{p}'" for p in paths) + "; do [ -s \"$f\" ] && echo x; done").split()
+    t.equal(len(written), len(paths), "local audio files written")
+
+
 def library_id(t, name):
     return next((v["ItemId"] for v in t.api.get("/Library/VirtualFolders") if v["Name"] == name), None)
 
@@ -50,13 +59,19 @@ def rows_under(t, paths):
                     tuple(p + "/%" for p in paths))[0]
 
 
+# The top of each library's tree: deleting these takes their seasons, albums and tracks with them.
+TOP_TYPES = ("%Movies.Movie", "%TV.Series", "%Audio.MusicArtist", "%Audio.MusicAlbum", "%Audio.Audio")
+
+
 def remove_libraries(t, libraries):
-    """Removes the movies and series below the libraries' paths, the libraries and their folders."""
+    """Removes the items below the libraries' paths, the libraries and their folders."""
     paths = [path for _, _, path in libraries]
     where = " or ".join("Path like ?" for _ in paths)
+    types = " or ".join("Type like ?" for _ in TOP_TYPES)
     for (item_id,) in t.db.query(
-            f"select lower(replace(Id,'-','')) from BaseItems where ({where}) "
-            "and (Type like '%Movies.Movie' or Type like '%TV.Series')", tuple(p + "/%" for p in paths)):
+            f"select lower(replace(Id,'-','')) from BaseItems where ({where}) and ({types})",
+            tuple(p + "/%" for p in paths) + TOP_TYPES):
+        # An album or track already gone with its artist answers 404, which call() does not raise.
         t.api.call("DELETE", f"/Items/{item_id}")
     names = {name for name, _, _ in libraries}
     for v in t.api.get("/Library/VirtualFolders"):

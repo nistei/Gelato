@@ -4,7 +4,7 @@ DESTRUCTIVE = True  # adds a library with local files and creates an API key; re
 import urllib.error
 import urllib.request
 
-from jfapi.native import add_library, remove_libraries, rows_under, write_videos
+from jfapi.native import add_library, remove_libraries, rows_under, write_audio, write_videos
 from jfapi.probe import log_count
 
 FILTER = "Gelato.Filters.DownloadFilter"
@@ -12,10 +12,15 @@ FILTER = "Gelato.Filters.DownloadFilter"
 APP = "jfapi-apikey"
 MOVIES_LIB, MOVIES_PATH = "jfapi-apikey-movies", "/tmp/jfapi-apikey-movies"
 SHOWS_LIB, SHOWS_PATH = "jfapi-apikey-shows", "/tmp/jfapi-apikey-shows"
-LIBRARIES = [(MOVIES_LIB, "movies", MOVIES_PATH), (SHOWS_LIB, "tvshows", SHOWS_PATH)]
+MUSIC_LIB, MUSIC_PATH = "jfapi-apikey-music", "/tmp/jfapi-apikey-music"
+LIBRARIES = [(MOVIES_LIB, "movies", MOVIES_PATH), (SHOWS_LIB, "tvshows", SHOWS_PATH),
+             (MUSIC_LIB, "music", MUSIC_PATH)]
 MOVIE = "Jfapi Apikey Movie (2001)"
 SHOW = "Jfapi Apikey Show (2003)"
 EPISODE = f"{SHOW}/Season 01/Jfapi Apikey Show S01E01.mkv"
+# The issue names audio as well, and the filter never looks at the item's type: it fails before
+# that. One track, to have the third kind of item the report lists.
+TRACK = "Jfapi Apikey Artist/Jfapi Apikey Album/01 Jfapi Apikey Track.mp3"
 
 
 def new_key(t):
@@ -49,15 +54,17 @@ def download(t, item_id, token):
 def run(t):
     remove_libraries(t, LIBRARIES)
     write_videos(t, [f"{MOVIES_PATH}/{MOVIE}/{MOVIE}.mkv", f"{SHOWS_PATH}/{EPISODE}"])
+    write_audio(t, [f"{MUSIC_PATH}/{TRACK}"])
     key = None
     try:
         _, movies = add_library(t, MOVIES_LIB, "movies", MOVIES_PATH, "Movie", 1)
         _, episodes = add_library(t, SHOWS_LIB, "tvshows", SHOWS_PATH, "Episode", 1)
-        if len(movies) != 1 or len(episodes) != 1:
+        _, tracks = add_library(t, MUSIC_LIB, "music", MUSIC_PATH, "Audio", 1)
+        if len(movies) != 1 or len(episodes) != 1 or len(tracks) != 1:
             return
         key = new_key(t)
 
-        for kind, item in (("movie", movies[0]), ("episode", episodes[0])):
+        for kind, item in (("movie", movies[0]), ("episode", episodes[0]), ("track", tracks[0])):
             status, body = download(t, item, key)
             t.log(f"native {kind} with the API key: {status} {body[:60]}")
             # 400 is what the filter answered: it read the empty guid out of the claim and asked
@@ -66,7 +73,7 @@ def run(t):
 
         # The same items through a user's token, so a failure above is about the API key and not
         # about downloads in general.
-        for kind, item in (("movie", movies[0]), ("episode", episodes[0])):
+        for kind, item in (("movie", movies[0]), ("episode", episodes[0]), ("track", tracks[0])):
             status, _ = download(t, item, t.api.token)
             t.check(status in (200, 206), f"the native {kind} downloads with a user token: {status}")
 
@@ -88,4 +95,4 @@ def run(t):
         if key:
             drop_keys(t)
         remove_libraries(t, LIBRARIES)
-        t.equal(rows_under(t, [MOVIES_PATH, SHOWS_PATH]), 0, "native items removed again")
+        t.equal(rows_under(t, [MOVIES_PATH, SHOWS_PATH, MUSIC_PATH]), 0, "native items removed again")
