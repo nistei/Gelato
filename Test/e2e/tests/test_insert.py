@@ -89,6 +89,33 @@ def run(t):
         t.check(rows["count"] >= len(srcs) and rows["owned"] == rows["count"] and rows["links"] == rows["count"], f"{label}: rows owned and linked {rows}")
         return runtime, row
 
+    def item_of(stremio):
+        rows = t.db.query(
+            "select lower(replace(b.Id,'-','')) from BaseItems b join BaseItemProviders p on p.ItemId=b.Id "
+            "and lower(p.ProviderId)='stremio' where p.ProviderValue=? and (b.Tags is null or b.Tags not like '%gelato-stream%')",
+            (stremio,))
+        return rows[0][0] if rows else None
+
+    def stream_straight_away():
+        """A client whose first call on a search hit is the stream itself. /Videos/{id}/stream and
+        /Videos/{id}/stream.{container} are two actions; the container form is what Infuse asks
+        for. Unless it materializes the title, it answers 404 and nothing reaches the library.
+        The title may have no playable stream, so the check is 'not a 404, and materialized'."""
+        for hit, stremio in fresh_hits(MOVIE_TERMS, "Movie"):
+            st, _, body = t.api.request(f"/Videos/{hit['Id']}/stream.mkv?static=true", {"Range": "bytes=0-0"}, max_bytes=1)
+            inserted = item_of(stremio)
+            t.log(f"stream.mkv straight on the hit {hit['Name']} ({stremio}): {st}, materialized as {(inserted or '-')[:8]}")
+            t.check(st != 404, f"stream.mkv on a hit nobody opened is not a 404: {st}")
+            t.check(inserted is not None, "stream.mkv on a hit nobody opened materializes the title")
+            if st in (200, 206):
+                t.check(len(body) == 1, f"stream.mkv on a hit nobody opened delivers bytes: {st}")
+            if inserted:
+                t.api.delete(f"/Items/{inserted}")
+            return
+        t.log("no search hit outside the library for the container-route check")
+
+    stream_straight_away()
+
     hit, stremio, d = open_fresh(MOVIE_TERMS, "Movie", lambda d: len(d.get("MediaSources") or []))
     if hit:
         movie = d.get("Id", "").lower()
