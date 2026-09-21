@@ -101,6 +101,12 @@ def install_webhook(api, db, log):
         else:
             log("Webhook plugin did not appear after the install: the event test will skip itself")
             return
+    # A fresh install comes up Disabled on an instance from the prod dump, where the plugin is off.
+    # Enabling needs a restart to take effect, so it happens before the one below.
+    plugin = next((p for p in api.get("/Plugins") if p.get("Name") == "Webhook"), None)
+    if plugin is not None and plugin.get("Status") != "Active":
+        api.call("POST", f"/Plugins/{plugin['Id']}/{plugin['Version']}/Enable")
+
     subprocess.run(["docker", "restart", db.container], capture_output=True)
     if wait_ready(api.base, log) is None:
         raise RuntimeError(f"{api.base} did not come back after the restart for the Webhook plugin")

@@ -29,8 +29,16 @@ def run(t):
         t.check(after[0] >= before[0], "no movie was lost")
         t.check(after[0] - before[0] <= CATALOG_ITEMS, f"at most {CATALOG_ITEMS} movies added")
         t.equal(after[1], before[1], "the import created no stream rows")
+        # Gelato keeps items whose release is still ahead out of every listing (FilterUnreleased), so
+        # they are in the database and not in this answer. Earlier tests insert titles from search,
+        # and an unreleased one among them made this check fail with a count one too low.
+        unreleased = t.db.one(
+            "select count(*) from BaseItems where Type like '%Movies.Movie' and (Tags is null or Tags not like '%gelato-stream%') "
+            "and PrimaryVersionId is null and EndDate > datetime('now', '+1 day')")[0]
         listed = t.api.get(f"/Items?userId={t.api.user}&IncludeItemTypes=Movie&Recursive=true&Limit=5000")
-        t.equal(listed.get("TotalRecordCount"), after[0], "the library lists every movie once, no rows")
+        t.log(f"{after[0]} movies in the database, {unreleased} of them unreleased")
+        t.equal(listed.get("TotalRecordCount"), after[0] - unreleased,
+                "the library lists every released movie once, no rows")
     finally:
         cfg.update(old)
         t.api.post(f"/Plugins/{GELATO}/Configuration", cfg)
