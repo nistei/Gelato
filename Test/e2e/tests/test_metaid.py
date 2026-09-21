@@ -12,7 +12,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from jfapi.bootstrap import GELATO
 
-PORT = 8767  # the honest manifest is served on PORT + 1
 TERMS = ["Heretic", "Nosferatu", "Anora", "Conclave", "Flow", "The Substance", "Civil War", "Longlegs",
          "Dune", "Oppenheimer", "Past Lives", "The Zone of Interest"]
 
@@ -28,11 +27,10 @@ class TmdbOnlyAddon:
     resource declares - a real tmdb-addon preset declares `tmdb:` alone, but an addon may well
     declare a prefix it then refuses, so both are worth a run."""
 
-    def __init__(self, upstream, port, ids, meta_id_prefixes=None):
+    def __init__(self, upstream, ids, meta_id_prefixes=None):
         self.upstream = upstream.rstrip("/")
         if self.upstream.endswith("/manifest.json"):
             self.upstream = self.upstream[: -len("/manifest.json")]
-        self.url = f"http://host.docker.internal:{port}"
         self.tmdb_of, self.imdb_of = ids  # tt id -> tmdb: id, and back
         # per requested id, so the library's background work on other items does not count
         self.by_imdb, self.by_tmdb = Counter(), Counter()  # 404ed, and served
@@ -109,7 +107,12 @@ class TmdbOnlyAddon:
             def log_message(self, *a):
                 pass
 
-        self.server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+        # Port 0: the operating system hands out a free one, so two suite runs against two
+        # instances do not fight over a fixed port (on Windows the second bind succeeds and
+        # silently receives nothing).
+        self.server = ThreadingHTTPServer(("0.0.0.0", 0), Handler)
+        self.port = self.server.server_address[1]
+        self.url = f"http://host.docker.internal:{self.port}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
     def close(self):
@@ -124,11 +127,11 @@ def run(t):
 
     ids = ({}, {})
     # Gelato keeps one addon client per URL, manifest and all, so the two manifests need two ports.
-    lying = TmdbOnlyAddon(old_url, PORT, ids)  # declares tt, then 404s it
-    honest = TmdbOnlyAddon(old_url, PORT + 1, ids, meta_id_prefixes=["tmdb:", "aiostreamserror"])
+    lying = TmdbOnlyAddon(old_url, ids)  # declares tt, then 404s it
+    honest = TmdbOnlyAddon(old_url, ids, meta_id_prefixes=["tmdb:", "aiostreamserror"])
     try:
-        if "ok" not in t.sh(f"curl -s -m 5 -o /dev/null http://host.docker.internal:{PORT}/manifest.json && echo ok"):
-            t.skip(f"the container cannot reach the host on port {PORT}")
+        if "ok" not in t.sh(f"curl -s -m 5 -o /dev/null {lying.url}/manifest.json && echo ok"):
+            t.skip(f"the container cannot reach the host on port {lying.port}")
 
         in_library = lambda sid: t.db.one(
             "select count(*) from BaseItems b join BaseItemProviders p on p.ItemId=b.Id and lower(p.ProviderId)='stremio' "

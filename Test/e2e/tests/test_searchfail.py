@@ -10,7 +10,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from jfapi.bootstrap import GELATO
 
-PORT = 8766
 TERM = "star"  # a term the addon answers with movies and series
 
 
@@ -54,7 +53,12 @@ class AddonProxy:
             def log_message(self, *a):
                 pass
 
-        self.server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+        # Port 0: the operating system hands out a free one, so two suite runs against two
+        # instances do not fight over a fixed port (on Windows the second bind succeeds and
+        # silently receives nothing).
+        self.server = ThreadingHTTPServer(("0.0.0.0", 0), Handler)
+        self.port = self.server.server_address[1]
+        self.url = f"http://host.docker.internal:{self.port}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
     def close(self):
@@ -68,9 +72,9 @@ def run(t):
         t.skip("Gelato has no addon URL")
     proxy = AddonProxy(old_url)
     try:
-        if "ok" not in t.sh(f"curl -s -m 5 -o /dev/null http://host.docker.internal:{PORT}/manifest.json && echo ok"):
-            t.skip(f"the container cannot reach the host on port {PORT}")
-        t.api.post(f"/Plugins/{GELATO}/Configuration", {**cfg, "Url": f"http://host.docker.internal:{PORT}"})
+        if "ok" not in t.sh(f"curl -s -m 5 -o /dev/null {proxy.url}/manifest.json && echo ok"):
+            t.skip(f"the container cannot reach the host on port {proxy.port}")
+        t.api.post(f"/Plugins/{GELATO}/Configuration", {**cfg, "Url": proxy.url})
         try:
             def search(label):
                 path = (f"/Items?userId={t.api.user}&searchTerm={urllib.parse.quote(TERM)}&IncludeItemTypes=Movie,Series"

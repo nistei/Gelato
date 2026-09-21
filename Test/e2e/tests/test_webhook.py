@@ -7,8 +7,6 @@ from collections import Counter
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 WEBHOOK = "71552a5a-5c5c-4350-a2ae-ebe451a30173"
-PORT = 8765
-
 
 class Listener:
     def __init__(self):
@@ -32,7 +30,12 @@ class Listener:
             def log_message(self, *a):
                 pass
 
-        self.server = HTTPServer(("0.0.0.0", PORT), Handler)
+        # Port 0: the operating system hands out a free one, so two suite runs against two
+        # instances do not fight over a fixed port (on Windows the second bind succeeds and
+        # silently receives nothing).
+        self.server = HTTPServer(("0.0.0.0", 0), Handler)
+        self.port = self.server.server_address[1]
+        self.url = f"http://host.docker.internal:{self.port}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
     def drain(self, wait=5):
@@ -55,11 +58,11 @@ def run(t):
         t.skip(f"Webhook plugin is {plugin.get('Status')}: enable it in the dashboard and restart")
     listener = Listener()
     try:
-        if "ok" not in t.sh(f"curl -s -m 5 http://host.docker.internal:{PORT}/ && echo ok"):
-            t.skip(f"the container cannot reach the host on port {PORT}")
+        if "ok" not in t.sh(f"curl -s -m 5 {listener.url}/ && echo ok"):
+            t.skip(f"the container cannot reach the host on port {listener.port}")
         old = t.api.get(f"/Plugins/{WEBHOOK}/Configuration")
         cfg = {**old, "GenericOptions": [{
-            "WebhookName": "jfapi", "WebhookUri": f"http://host.docker.internal:{PORT}/hook",
+            "WebhookName": "jfapi", "WebhookUri": f"{listener.url}/hook",
             "NotificationTypes": ["PlaybackStart", "PlaybackProgress", "PlaybackStop", "UserDataSaved"],
             "EnableMovies": True, "EnableEpisodes": True, "EnableVideos": True, "SendAllProperties": True, "EnableWebhook": True,
             "Headers": [], "Fields": [], "UserFilter": []}]}

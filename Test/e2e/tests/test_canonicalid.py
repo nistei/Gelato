@@ -12,7 +12,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from jfapi.bootstrap import GELATO
 
-PORT = 8773
 TERMS = ["Heretic", "Nosferatu", "Anora", "Conclave", "Flow", "The Substance", "Civil War", "Longlegs",
          "Dune", "Oppenheimer", "Past Lives", "Furiosa", "Twisters", "Wicked", "Gladiator"]
 # what an insert that cannot reconcile its provider ids with the canonical item's leaves in the log
@@ -35,11 +34,10 @@ class TwinCatalogAddon:
     on a single library item, whichever of the two was opened first.
     """
 
-    def __init__(self, upstream, port):
+    def __init__(self, upstream):
         self.upstream = upstream.rstrip("/")
         if self.upstream.endswith("/manifest.json"):
             self.upstream = self.upstream[: -len("/manifest.json")]
-        self.url = f"http://host.docker.internal:{port}"
         self.imdb_of = {}  # tmdb: twin -> the tt id it was made from
         outer = self
 
@@ -102,7 +100,12 @@ class TwinCatalogAddon:
             def log_message(self, *a):
                 pass
 
-        self.server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+        # Port 0: the operating system hands out a free one, so two suite runs against two
+        # instances do not fight over a fixed port (on Windows the second bind succeeds and
+        # silently receives nothing).
+        self.server = ThreadingHTTPServer(("0.0.0.0", 0), Handler)
+        self.port = self.server.server_address[1]
+        self.url = f"http://host.docker.internal:{self.port}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
     def close(self):
@@ -122,11 +125,11 @@ def run(t):
     if not old_url:
         t.skip("Gelato has no addon URL")
 
-    proxy = TwinCatalogAddon(old_url, PORT)
+    proxy = TwinCatalogAddon(old_url)
     started = time.time()
     try:
-        if "ok" not in t.sh(f"curl -s -m 5 -o /dev/null http://host.docker.internal:{PORT}/manifest.json && echo ok"):
-            t.skip(f"the container cannot reach the host on port {PORT}")
+        if "ok" not in t.sh(f"curl -s -m 5 -o /dev/null {proxy.url}/manifest.json && echo ok"):
+            t.skip(f"the container cannot reach the host on port {proxy.port}")
 
         def set_url(url):
             t.api.post("/Plugins/" + GELATO + "/Configuration",
