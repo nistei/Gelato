@@ -7,12 +7,17 @@ WIDTH = 200  # a resized render keeps the bodies small
 TYPES = {0: "Primary", 1: "Art", 2: "Backdrop", 3: "Banner", 4: "Logo", 5: "Thumb",
          6: "Disc", 7: "Box", 8: "Screenshot", 9: "Menu", 10: "Chapter", 11: "BoxRear"}
 
+# The AggregateFolder ("root", /config/root) is Jellyfin's internal root over the physical library
+# folders: no client ever renders it, and its image is whatever Jellyfin's folder provider copied from
+# a child. On a Gelato-only library that child image is a lazy placeholder, so the root ends up with a
+# zero-byte poster while every folder a user sees (UserRootFolder, the CollectionFolders) gets a real
+# collage. Out of the sample: it says nothing about Gelato's images.
 IMAGES = (
     "select replace(replace(b.Type,'MediaBrowser.Controller.Entities.',''),'Jellyfin.Data.Entities.','') t, "
     "i.ImageType, case when i.Path like '%/gelato/images/%' then 'gelato' else 'local' end store, "
     "lower(replace(b.Id,'-','')), b.Name, i.Path "
     "from BaseItemImageInfos i join BaseItems b on b.Id=i.ItemId "
-    "where i.ImageType in (0,1,2,3,4,5,6,7,11) order by b.Id"
+    "where i.ImageType in (0,1,2,3,4,5,6,7,11) and b.Type not like '%AggregateFolder' order by b.Id"
 )
 
 

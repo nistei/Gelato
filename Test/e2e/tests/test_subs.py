@@ -41,9 +41,13 @@ def run_twice(t, label, stream_rows):
     t.equal(cwd + cwd2, [], f"{label}: no subtitle in the working directory")
     t.equal(invalid_paths(t) - invalid, 0, f"{label}: no download rejected for an invalid path")
 
-    misplaced = [f for f in second if (m := IN_LIBRARY.search(f)) and m.group(1) not in stream_rows]
+    # Only what these two runs wrote: the metadata folder is shared with earlier runs (on Linux it is a
+    # volume every instance mounts), and a file some older build left there says nothing about this one.
+    written = sorted(set(second) - set(before))
+    t.log(f"{label}: {len(written)} file(s) written by the two runs, {len(before)} already there")
+    misplaced = [f for f in written if (m := IN_LIBRARY.search(f)) and m.group(1) not in stream_rows]
     t.equal(misplaced, [], f"{label}: every saved subtitle belongs to a stream row, none to a placeholder")
-    t.equal([f for f in second if NUMBERED.search(f)], [], f"{label}: no numbered copies (.en.0.vtt)")
+    t.equal([f for f in written if NUMBERED.search(f)], [], f"{label}: no numbered copies (.en.0.vtt)")
     return new
 
 
