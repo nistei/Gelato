@@ -2,16 +2,18 @@
 configured against the addon with one small movie catalog and one small series catalog, both of them
 creating a collection, the two libraries on Gelato's folders, a library scan, one catalog import.
 
-Nothing is installed: Gelato (and the optional Webhook plugin) must be in the container's plugin
-folder already, e.g. mounted from a build.
+Gelato itself is not installed: it must be in the container's plugin folder already, e.g. mounted
+from a build. The Webhook plugin is installed here, so the event test runs on a fresh instance too.
 """
 import json
+import subprocess
 import time
 import urllib.request
 
 from .api import Api
 
 GELATO = "94ea4e14-8163-4989-96fe-0a2094bc2d6a"
+WEBHOOK_GUID = "71552a5a-5c5c-4350-a2ae-ebe451a30173"
 MOVIE_PATH = "/tmp/gelato/movies"
 SERIES_PATH = "/tmp/gelato/series"
 CATALOG_ITEMS = 20
@@ -80,7 +82,35 @@ def manifest_catalogs(addon_url):
         return json.load(r).get("catalogs", [])
 
 
+def install_webhook(api, db, log):
+    """Installs the Webhook plugin and restarts the container. Jellyfin loads a plugin only at startup,
+    so without this every fresh instance skips the event test. Failures are not fatal: the test skips
+    itself when the plugin is missing or not Active."""
+    plugins = {p.get("Name"): p for p in api.get("/Plugins")}
+    if plugins.get("Webhook", {}).get("Status") == "Active":
+        return
+    if "Webhook" not in plugins:
+        st, _ = api.call("POST", f"/Packages/Installed/Webhook?assemblyGuid={WEBHOOK_GUID}")
+        if st not in (200, 204):
+            log(f"Webhook plugin not installed (HTTP {st}): the event test will skip itself")
+            return
+        for _ in range(30):  # the package is downloaded in the background
+            time.sleep(2)
+            if "Webhook" in {p.get("Name") for p in api.get("/Plugins")}:
+                break
+        else:
+            log("Webhook plugin did not appear after the install: the event test will skip itself")
+            return
+    subprocess.run(["docker", "restart", db.container], capture_output=True)
+    if wait_ready(api.base, log) is None:
+        raise RuntimeError(f"{api.base} did not come back after the restart for the Webhook plugin")
+    api.ensure()
+    status = next((p.get("Status") for p in api.get("/Plugins") if p.get("Name") == "Webhook"), None)
+    log(f"Webhook plugin installed, status {status}")
+
+
 def setup(api, db, addon_url, log):
+    install_webhook(api, db, log)  # before the library work: the plugin needs a restart to load
     cfg = api.get(f"/Plugins/{GELATO}/Configuration")
     catalogs = manifest_catalogs(addon_url)
     chosen = []
