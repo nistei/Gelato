@@ -57,6 +57,11 @@ def run(t):
         t.log(f"series {series_id[:8]}: locked+cleared {cleared['Id'][:8]}, locked {kept['Id'][:8]}, "
               f"unlocked+cleared {unlocked['Id'][:8]}, season {season['Id'][:8] if season is not None else '-'}")
 
+        # The season goes first: Jellyfin hands a folder's lock down to its children, so locking the
+        # season after the episodes locked every one of them again, the unlocked one included, and
+        # the sync then rightly left it alone.
+        if season is not None:
+            edit(t, season["Id"], LockData=True, Name="MY SEASON", IndexNumber=None)
         # A locked episode whose numbers someone cleared or changed: the sync misses it in its
         # number lookup, and the episode it builds for that number takes the same id, since the id
         # is the hash of the path. Saving it replaced the row, lock and all.
@@ -66,13 +71,13 @@ def run(t):
         edit(t, kept["Id"], LockData=True, Name=f"Episode {kept.get('IndexNumber')}", Overview="")
         # The same edit without the lock: the sync repairs it, and writes no second row for it.
         edit(t, unlocked["Id"], LockData=False, IndexNumber=None, ParentIndexNumber=None)
-        if season is not None:
-            edit(t, season["Id"], LockData=True, Name="MY SEASON", IndexNumber=None)
         for m in movies:
             edit(t, m["Id"], EndDate=None)
         edit(t, movies[0]["Id"], LockData=True)
 
         t.equal(state(t, cleared["Id"]), ("MY OWN TITLE", "my own overview", None, None, 1), "the locked episode is saved as edited")
+        # The case the sync is supposed to repair only exists while this episode is really unlocked.
+        t.equal(state(t, unlocked["Id"])[2:], (None, None, 0), "the unlocked episode is saved cleared and unlocked")
         before = episode_rows(t, series_id)
         t.log(f"{sum(len(v) for v in before.values())} episode rows before the sync")
 
