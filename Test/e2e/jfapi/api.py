@@ -7,11 +7,23 @@ token is cached in `.cache/` per port and user; delete it after an instance `-Re
 The module-level `call()` / `session()` keep the single-user scripts in `tools/` working; they
 read `JF_URL` (default http://localhost:8096), `JF_ADMINUSER` (admin) and `JF_ADMINPASSWORD` (empty).
 """
+import hashlib
 import json
 import os
 import time
 import urllib.error
 import urllib.request
+import uuid
+
+
+def search_result_id(external_id, kind="movie"):
+    """The id a search result carries for a stremio id: MD5 of the item's stremio uri, read as a
+    guid the way .NET does (StremioUri.ToGuid). A title the library already has is answered with
+    the library item instead, so this is the id of a stand-in — and the id such a result keeps in
+    the page URL after it was opened."""
+    uri = f"stremio://{kind}/{external_id}"
+    return uuid.UUID(bytes_le=hashlib.md5(uri.encode()).digest()).hex
+
 
 CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".cache")
 BASE = os.environ.get("JF_URL", "http://localhost:8096")

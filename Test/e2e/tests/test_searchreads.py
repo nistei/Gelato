@@ -3,6 +3,7 @@ DESCRIPTION = "The details-page reads a client issues with a search result's id 
 import threading
 import time
 
+from jfapi.api import search_result_id
 from jfapi.bootstrap import GELATO
 
 # Titles for the half that opens a result the library does not have yet.
@@ -46,18 +47,26 @@ def run(t):
     cfg = t.api.get("/Plugins/" + GELATO + "/Configuration")
     t.api.post("/Plugins/" + GELATO + "/Configuration", cfg)
 
+    # The id of the addon's result for the title, computed instead of looked for: a search answers
+    # for a title the library already has with the library's own item, so the stand-in id is not
+    # in the answer — but a client that opened the result before the library had the title keeps
+    # it in the page URL, and every read below is issued with it. The search still has to run: it
+    # is what hands the filter the meta the id is resolved through, and a client that has such an
+    # id in its URL searched for it.
     movie = search_id = None
     for item_id, name, stremio in t.db.query(CANDIDATE_SQL):
-        hit = next((h for h in t.api.search(name, "Movie", limit=25)
-                    if (h.get("Path") or "") == f"gelato://stub/{stremio}"), None)
-        if hit is not None:
-            movie, search_id = item_id, hit["Id"]
-            t.log(f"the search returns {name} ({stremio}) as {search_id[:8]}, the library item is {item_id[:8]}")
+        candidate = search_result_id(stremio)
+        if candidate == item_id:
+            continue
+        hits = t.api.search(name, "Movie", limit=25)
+        if any(h["Id"].lower() == item_id for h in hits):
+            movie, search_id = item_id, candidate
+            t.log(f"{name} ({stremio}): the search answers with the library item {item_id[:8]}, "
+                  f"its search-result id is {search_id[:8]}")
             break
+        t.log(f"skipped {name}: the search does not answer with the library item")
     if movie is None:
-        t.skip("the search returned none of six library movies under its own stremio id")
-    if not t.check(search_id.lower() != movie, "the search result carries a search-result id, not the library item's"):
-        return
+        t.skip("the search answered with none of six library movies under its own name")
 
     def read(item_id, path):
         st, d = t.api.call("GET", path.format(id=item_id, user=t.api.user))

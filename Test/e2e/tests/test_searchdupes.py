@@ -1,13 +1,17 @@
-DESCRIPTION = "A search that names item types keeps the library's own copy of a title out of the answer, so a movie or series the library already has is listed once, not twice"
+DESCRIPTION = "A movie or series the library already has is listed once in a search, as the library's own item with its user data, in the place the addon's result for it had"
 
 import urllib.parse
 
 # What the web client asks for in a global search, and what it asks for inside a library: both
 # name the types. Jellyfin drops excludeItemTypes as soon as includeItemTypes is set, so a
-# pass-through that only excludes movies and series still answers with the library's own copy
-# of a title the addon just answered for.
+# library half that only excludes movies and series still answers with the library's own copy of
+# a title the addon just answered for.
 GLOBAL_TYPES = "Movie,Series,Episode,Playlist,MusicAlbum,Audio,TvChannel,PhotoAlbum,Photo,AudioBook,Book,BoxSet"
 LIBRARY_TYPES = "Movie,Series,Episode"
+
+# A title to open from the addon's search, so the collision is built by the test instead of
+# waited for: the library has it afterwards, and the addon still answers for its name.
+FRESH_TERMS = ["Nosferatu", "Heretic", "Anora", "Conclave", "Flow", "Longlegs", "Civil War"]
 
 CANDIDATE_SQL = (
     "select lower(replace(b.Id,'-','')), b.Name, p.ProviderValue from BaseItems b "
@@ -18,9 +22,9 @@ CANDIDATE_SQL = (
 )
 
 
-def search(t, term, types=None):
+def search(t, term, types=None, limit=200):
     path = (f"/Items?userId={t.api.user}&searchTerm={urllib.parse.quote(term)}"
-            f"&Recursive=true&Limit=200&Fields=Path&Fields=ProviderIds")
+            f"&Recursive=true&Limit={limit}&Fields=Path&Fields=ProviderIds")
     if types:
         path += f"&IncludeItemTypes={types}"
     st, d = t.api.call("GET", path)
@@ -41,40 +45,39 @@ def key(item):
 
 
 def copies(items, wanted):
-    return [i for i in items if key(i) == wanted]
-
-
-def pick(t, sql_type):
-    """A title the library owns and the addon answers for, as (item id, name, stremio id): the
-    two preconditions of the duplicate. None when no candidate has both."""
-    for item_id, name, stremio in t.db.query(CANDIDATE_SQL, (sql_type,)):
-        st, local = search(t, "local:" + name, LIBRARY_TYPES)
-        if st != 200 or not any(i["Id"] == item_id for i in local):
-            t.log(f"skipped {name!r}: the library search does not find the item itself")
-            continue
-        # The movie-and-series search is the one shape the addon answers alone, so a hit there
-        # is the addon having the title.
-        st, addon = search(t, name, "Movie,Series")
-        if st == 200 and any(key(i) == stremio and i["Id"] != item_id for i in addon):
-            t.log(f"candidate: {name!r} ({item_id[:8]}, {stremio})")
-            return item_id, name, stremio
-        t.log(f"skipped {name!r} ({stremio}): the addon does not answer for it")
-    return None
+    return [(i, n) for n, i in enumerate(items) if key(i) == wanted]
 
 
 def check_once(t, label, name, item_id, stremio, items):
+    """One result for the title, and it is the library's own item, not a stand-in for it."""
     same = copies(items, stremio)
     t.log(f"{label}: {len(items)} items, {len(same)} for {stremio}: "
-          f"{[(i['Id'][:8], i.get('Type')) for i in same]}")
-    t.equal(len(same), 1, f"{label} lists {name!r} once")
-    t.check(not any(i["Id"] == item_id for i in same),
-            f"{label} answers with the addon's result, not the library's own item")
+          f"{[(i['Id'][:8], i.get('Type'), n) for i, n in same]}")
+    if not t.equal(len(same), 1, f"{label} lists {name!r} once"):
+        return None
+    found, at = same[0]
+    t.equal(found["Id"], item_id, f"{label} answers with the library's own item for {name!r}")
+    t.check(found.get("UserData") is not None,
+            f"{label} carries the item's user data (watched state, resume position)")
+    return at
+
+
+def pick_existing(t, sql_type):
+    """A title the library owns, as (item id, name, stremio id), that Jellyfin's own search finds
+    under its name. None when no candidate does."""
+    for item_id, name, stremio in t.db.query(CANDIDATE_SQL, (sql_type,)):
+        st, local = search(t, "local:" + name, LIBRARY_TYPES)
+        if st == 200 and any(i["Id"] == item_id for i in local):
+            t.log(f"candidate: {name!r} ({item_id[:8]}, {stremio})")
+            return item_id, name, stremio
+        t.log(f"skipped {name!r}: the library search does not find the item itself")
+    return None
 
 
 def run(t):
-    picked = pick(t, "%Movies.Movie")
+    picked = pick_existing(t, "%Movies.Movie")
     if picked is None:
-        t.skip("no library movie that the addon also answers for")
+        t.skip("no library movie the library search finds under its own name")
     item_id, name, stremio = picked
 
     for label, types in [("the global search", GLOBAL_TYPES),
@@ -85,12 +88,39 @@ def run(t):
         t.equal(st, 200, f"{label} for {name!r} answers")
         check_once(t, label, name, item_id, stremio, items)
 
-    # The same for a series: a show the library has must not come back next to the addon's.
-    picked = pick(t, "%TV.Series")
+    picked = pick_existing(t, "%TV.Series")
     if picked is None:
-        t.log("no library series that the addon also answers for, the series half is left out")
+        t.log("no library series the library search finds under its own name, that half is left out")
+    else:
+        series_id, series_name, series_stremio = picked
+        st, items = search(t, series_name, GLOBAL_TYPES)
+        t.equal(st, 200, f"the global search for the series {series_name!r} answers")
+        check_once(t, "the global search", series_name, series_id, series_stremio, items)
+
+    # The collision built here, so the substitution is observed from both sides: the addon's
+    # result before the library has the title, the library's item in its place afterwards.
+    for term in FRESH_TERMS:
+        hits = t.api.search(term, "Movie", limit=10, fields="Path,ProviderIds")
+        fresh = next((h for h in hits if h.get("UserData") is None and key(h)), None)
+        if fresh is None:
+            continue
+        before = [h["Id"] for h in hits]
+        at_before = before.index(fresh["Id"])
+        stremio = key(fresh)
+        t.log(f"opening {fresh['Name']!r} ({stremio}), result {at_before} of {len(hits)} for {term!r}")
+
+        opened = t.api.item(fresh["Id"])
+        library_id = (opened.get("Id") or "").lower()
+        if not t.check(library_id and library_id != fresh["Id"].lower(),
+                       "the result opened on a library item"):
+            return
+
+        hits = t.api.search(term, "Movie", limit=10, fields="Path,ProviderIds")
+        at_after = check_once(t, f"the search for {term!r} after the title was opened",
+                              fresh["Name"], library_id, stremio, hits)
+        if at_after is not None:
+            t.equal(at_after, at_before,
+                    f"the library's item took the addon result's place for {fresh['Name']!r}")
         return
-    series_id, series_name, series_stremio = picked
-    st, items = search(t, series_name, GLOBAL_TYPES)
-    t.equal(st, 200, f"the global search for the series {series_name!r} answers")
-    check_once(t, "the global search", series_name, series_id, series_stremio, items)
+
+    t.log("no fresh title the addon answers for, the substitution half is left out")
