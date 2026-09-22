@@ -61,6 +61,12 @@ def run(t):
     picks = sample(t)
     if not picks:
         t.skip("no images on this instance")
+    # An instance made from a dump without its artwork has the image records but not the files:
+    # every image Jellyfin keeps itself is a 404, which says nothing about Gelato.
+    local = [path for _, _, store, _, _, path in picks if store == "local"]
+    missing = sum(1 for path in local if on_disk(t, path) == "missing")
+    t.require(not local or missing * 2 <= len(local),
+              f"{missing} of {len(local)} sampled local images are not on disk: the instance has no artwork (Start-JfLinux.ps1 -Artwork)")
     kinds = sorted({(k, TYPES[i], s) for k, i, s, _, _, _ in picks})
     t.log(f"{len(picks)} images over {len(kinds)} combinations of item type, image type and storage:")
     for k in kinds:
