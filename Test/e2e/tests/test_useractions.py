@@ -54,10 +54,19 @@ def run(t):
     user = t.api.user
     inserted = set()
 
-    def in_library(stremio):
-        return t.db.one(
-            "select count(*) from BaseItems b join BaseItemProviders p on p.ItemId=b.Id and lower(p.ProviderId)='stremio' "
-            "where p.ProviderValue=? and (b.Tags is null or b.Tags not like '%gelato-stream%')", (stremio,))[0]
+    def in_library(stremio, retry=False):
+        """How many library items the title has. With retry, a zero is asked again on a new
+        snapshot: one copied out between the database and its write-ahead log misses a row the
+        server has."""
+        sql = ("select count(*) from BaseItems b join BaseItemProviders p on p.ItemId=b.Id and lower(p.ProviderId)='stremio' "
+               "where p.ProviderValue=? and (b.Tags is null or b.Tags not like '%gelato-stream%')")
+        for attempt in range(4 if retry else 1):
+            n = t.db.one(sql, (stremio,))[0]
+            if n:
+                return n
+            t.db.invalidate()
+            time.sleep(1)
+        return n
 
     def library_item(stremio, kind="Movie"):
         """The library id of the title, retried: a snapshot taken right after the write can be
@@ -152,7 +161,7 @@ def run(t):
                     # same item, this time through the remembered redirect and not a new insert.
                     st2, d2 = t.api.call("POST", w["path"].format(id=h["Id"]), w.get("body"))
                     t.check(st2 == 200, f"{w['name']} on {h['Name']}: the hit's id still works after the insert ({st2})")
-                    t.equal(in_library(s), 1, f"{w['name']} on {h['Name']}: still one item, the second call inserted nothing")
+                    t.equal(in_library(s, retry=True), 1, f"{w['name']} on {h['Name']}: still one item, the second call inserted nothing")
                 covered.append(w["name"])
                 break
 
@@ -229,7 +238,7 @@ def run(t):
             state = t.api.get(f"/UserItems/{item_id}/UserData?userId={user}")
             t.check(state.get(w["field"]) is True,
                     f"{w['name']} on {name!r}: the state is on the library item ({state.get(w['field'])!r})")
-            t.equal(in_library(stremio), 1, f"{w['name']} on {name!r}: still one item, nothing was inserted")
+            t.equal(in_library(stremio, retry=True), 1, f"{w['name']} on {name!r}: still one item, nothing was inserted")
 
             again = next((h for h in t.api.search(name, "Movie", limit=25, fields="Path,ProviderIds")
                           if h["Id"].replace("-", "").lower() == item_id), None)
