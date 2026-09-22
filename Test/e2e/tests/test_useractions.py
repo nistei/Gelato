@@ -1,4 +1,4 @@
-DESCRIPTION = "Mark played, favorite, rating and a user data update on a search result that was never opened: the write materializes the title instead of answering 404"
+DESCRIPTION = "Mark played, favorite, rating and a user data update from a search result's context menu: on a result the library does not have the write materializes the title, on one it has it lands on the library item and the next search shows the new state"
 
 import re
 import time
@@ -27,6 +27,22 @@ def writes(user):
         {"name": "UpdateItemUserDataLegacy", "path": f"/Users/{user}/Items/{{id}}/UserData", "field": "Played",
          "body": {"Played": True, "IsFavorite": True}},
     ]
+
+
+# Undoing a write on a library item, so the instance is left the way it was found.
+UNDO = {
+    "Played": ("DELETE", "/UserPlayedItems/{id}?userId={user}", None),
+    "IsFavorite": ("DELETE", "/UserFavoriteItems/{id}?userId={user}", None),
+    "Likes": ("DELETE", "/UserItems/{id}/Rating?userId={user}", None),
+}
+
+CANDIDATE_SQL = (
+    "select lower(replace(b.Id,'-','')), b.Name, p.ProviderValue from BaseItems b "
+    "join BaseItemProviders p on p.ItemId=b.Id and lower(p.ProviderId)='stremio' "
+    "where b.Type like '%Movies.Movie' and (b.Tags is null or b.Tags not like '%gelato-stream%') "
+    "and b.PrimaryVersionId is null and p.ProviderValue like 'tt%' and length(b.Name) > 3 "
+    "order by random() limit 40"
+)
 
 
 def stremio_of(hit):
@@ -171,35 +187,67 @@ def run(t):
         else:
             t.log("no series hit outside the library among the terms")
 
-        # A title that is already in the library comes back from search under a synthetic id too:
-        # the addon answers the Movie and Series search and Jellyfin's own results for those types
-        # are excluded, so every hit is built from addon metadata. The write must find the
-        # existing item instead of inserting a second one.
-        known = t.movie()
-        row = t.db.one(
-            "select b.Name, p.ProviderValue from BaseItems b join BaseItemProviders p on p.ItemId=b.Id and lower(p.ProviderId)='stremio' "
-            "where lower(replace(b.Id,'-',''))=?", (known,))
-        if row is None:
-            t.log("the picked library movie has no stremio id, the already-in-the-library check is left out")
-        else:
-            name, stremio_known = row
-            t.api.call("DELETE", f"/UserFavoriteItems/{known}?userId={user}")
-            hit = next((h for h in t.api.search(name, "Movie", limit=10) if stremio_of(h) == stremio_known), None)
-            if hit is None:
-                t.log(f"the addon's search for \"{name}\" does not return {stremio_known}, the already-in-the-library check is left out")
-            else:
-                t.check(hit["Id"].replace("-", "").lower() != known,
-                        f"the library movie {name} comes back from search under a synthetic id ({hit['Id'][:8]} vs {known[:8]})")
-                t.check(hit.get("UserData") is None, f"the search hit for the library movie carries no UserData: {hit.get('UserData')!r}")
-                st, d = t.api.call("POST", f"/UserFavoriteItems/{hit['Id']}?userId={user}")
-                t.equal(st, 200, f"favoriting the search hit of a title already in the library ({name})")
-                t.equal(in_library(stremio_known), 1, f"{name} is still one item, the write inserted no duplicate")
-                t.check(t.api.user_data(known)["IsFavorite"] is True, f"{name} is favorited on the library item")
-                # What the client shows afterwards: the search is answered from the addon, so the
-                # hit carries no state whatever the write did. Recorded, not required.
-                again = next((h for h in t.api.search(name, "Movie", limit=10) if stremio_of(h) == stremio_known), None)
-                t.log(f"the search hit for {name} after the write: id {(again or {}).get('Id', '-')[:8]}, UserData {(again or {}).get('UserData')!r}")
-                t.api.call("DELETE", f"/UserFavoriteItems/{known}?userId={user}")
+        # The other half of the context menu: a result of a title the library already has. The
+        # search answers for it with the library item, so the write is sent with that id, the
+        # state lands on the item itself, and the next search shows it — which is what draws the
+        # tick and the resume bar on the card the menu was opened from.
+        def materialized_hits():
+            """(search hit, library id, stremio id) for titles the library has and the addon
+            answers for, one per write. The hit is what a client would open the menu on."""
+            for item_id, name, stremio in t.db.query(CANDIDATE_SQL):
+                try:
+                    hits = t.api.search(name, "Movie", limit=25, fields="Path,ProviderIds")
+                except Exception as e:
+                    t.log(f"search \"{name}\" failed: {e}")
+                    continue
+                hit = next((h for h in hits if h["Id"].replace("-", "").lower() == item_id), None)
+                if hit is not None:
+                    yield hit, item_id, stremio
+
+        known_hits = materialized_hits()
+        touched = []
+        done, missing = [], []
+        for w in all_writes:
+            nxt = next(known_hits, None)
+            if nxt is None:
+                missing.append(w["name"])
+                continue
+            hit, item_id, stremio = nxt
+            name = hit.get("Name")
+
+            t.check(hit.get("UserData") is not None,
+                    f"{w['name']}: the search result for {name!r} is the library item, with its user data")
+
+            st, d = t.api.call("POST", w["path"].format(id=hit["Id"]), w.get("body"))
+            touched.append((item_id, w["field"]))
+            if not t.equal(st, 200, f"{w['name']} on the library title {name!r}"):
+                continue
+            t.check(isinstance(d, dict) and d.get(w["field"]) is True,
+                    f"{w['name']} on {name!r}: the answer has {w['field']}=True")
+            # Read whole, not through api.user_data(): that one keeps the played and favourite
+            # keys only, and a rating is neither.
+            state = t.api.get(f"/UserItems/{item_id}/UserData?userId={user}")
+            t.check(state.get(w["field"]) is True,
+                    f"{w['name']} on {name!r}: the state is on the library item ({state.get(w['field'])!r})")
+            t.equal(in_library(stremio), 1, f"{w['name']} on {name!r}: still one item, nothing was inserted")
+
+            again = next((h for h in t.api.search(name, "Movie", limit=25, fields="Path,ProviderIds")
+                          if h["Id"].replace("-", "").lower() == item_id), None)
+            t.check(again is not None and (again.get("UserData") or {}).get(w["field"]) is True,
+                    f"{w['name']} on {name!r}: the next search shows {w['field']} on the result "
+                    f"({(again or {}).get('UserData')})")
+            done.append(w["name"])
+
+        t.log(f"covered on library titles: {', '.join(done) or 'none'}")
+        if missing:
+            t.log(f"no library title the addon answers for left for: {', '.join(missing)}")
+        t.check(len(done) >= 4, f"enough library titles to cover the writes ({len(done)} of {len(all_writes)})")
+
+        for item_id, field in touched:
+            method, path, body = UNDO[field]
+            t.api.call(method, path.format(id=item_id, user=user), body)
+            if field == "Played":  # the user data update sets the favorite too
+                t.api.call("DELETE", f"/UserFavoriteItems/{item_id}?userId={user}")
 
         # InsertableActionNames also gates the stream sync in the media source decorator, so a
         # user data write must not make Gelato pull an addon's streams for a title nobody asked
