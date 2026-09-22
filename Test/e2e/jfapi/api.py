@@ -128,6 +128,22 @@ class Api:
     def delete(self, path):
         return self._ok("DELETE", path)
 
+    # Opening a title answers before Gelato's background save of the insert has run. A delete that
+    # lands in between is undone: the save writes the item back, without its stream rows, and a
+    # series tree fails on a foreign key (500). Known and pre-existing (PROD-FINDINGS #25); the
+    # tests wait it out instead of tripping over it. The save was seen ~0.7 s after the insert.
+    INSERT_SETTLE_SECONDS = 3
+
+    def settle_insert(self):
+        """Waits until an insert's background save has run, before a delete."""
+        time.sleep(self.INSERT_SETTLE_SECONDS)
+
+    def delete_inserted(self, item_id):
+        """Deletes an item the test inserted, once the insert has settled. (status, body); never
+        raises, so it is safe in a finally."""
+        self.settle_insert()
+        return self.call("DELETE", f"/Items/{item_id}")
+
     # ---- items
 
     def item(self, item_id, fields=None):

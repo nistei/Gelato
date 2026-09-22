@@ -116,4 +116,4 @@ def run(t):
         for d in movies:
             edit(t, d["Id"], EndDate=d.get("EndDate"), LockData=d.get("LockData"))
         if inserted:
-            t.api.call("DELETE", f"/Items/{series_id}")
+            t.api.delete_inserted(series_id)

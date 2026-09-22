@@ -91,7 +91,7 @@ def run(t):
             t.equal(in_library(stremio), 1, f"{label}: one library item for the title")
         finally:
             for gone in {item, item_of(stremio)} - {None}:
-                t.api.delete(f"/Items/{gone}")
+                t.api.delete_inserted(gone)
             t.equal(in_library(stremio), 0, f"{label}: the title was removed again")
 
     key = new_key(t)
@@ -115,6 +115,6 @@ def run(t):
         t.log(f"API key, no user named: {hit['Name']} ({stremio}) answered HTTP {status}")
         t.equal(in_library(stremio), 0, "a request that names no user materializes nothing")
         if in_library(stremio):
-            t.api.delete(f"/Items/{item_of(stremio)}")
+            t.api.delete_inserted(item_of(stremio))
     finally:
         drop_keys(t)

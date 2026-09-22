@@ -295,7 +295,7 @@ def run(t):
     finally:
         for item in inserted:
             try:
-                t.api.delete(f"/Items/{item}")
+                t.api.delete_inserted(item)
             except Exception as e:
                 t.log(f"could not remove {item}: {e}")
         t.log(f"removed {len(inserted)} inserted item(s) again")

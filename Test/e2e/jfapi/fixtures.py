@@ -132,7 +132,7 @@ class Fixtures:
                 if ok:
                     self.log(f"inserted from search for the run: {d.get('Name')} ({item[:8]})")
                     return [(item, d.get("Name"))]
-                self.api.call("DELETE", f"/Items/{item}")
+                self.api.delete_inserted(item)
         return []
 
     def episodes(self, series, season_number=1):

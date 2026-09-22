@@ -22,7 +22,7 @@ def pick_series(t):
             if d.get("Status") == "Continuing" and len(t.episodes(series_id, 1)) >= 2:
                 t.log(f"inserted from search: {d.get('Name')} ({series_id[:8]})")
                 return series_id, True
-            t.api.call("DELETE", f"/Items/{series_id}")
+            t.api.delete_inserted(series_id)
     return None, False
 
 
@@ -89,7 +89,7 @@ def run(t):
         t.equal(len(series_with_stremio_id(t, stremio_id)), 1, "still one series for that Stremio id")
     finally:
         if inserted:
-            t.api.call("DELETE", f"/Items/{series_id}")
+            t.api.delete_inserted(series_id)
         else:
             set_provider_ids(t, series_id, before)
             t.log(f"provider ids restored: {provider_ids(t, series_id)}")

@@ -124,5 +124,5 @@ def run(t):
             t.equal(ids_of(items), ids_of(want), "they are the ancestors of the item the page ends up on")
     finally:
         if inserted:
-            t.api.delete(f"/Items/{inserted}")
+            t.api.delete_inserted(inserted)
         t.db.invalidate()

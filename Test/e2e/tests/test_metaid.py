@@ -180,7 +180,7 @@ def run(t):
                 t.equal(in_library(imdb) + in_library(tmdb), 1, f"{label}: one movie item in the library")
                 t.check(len(d.get("MediaSources") or []) >= 1, f"{label}: it has streams ({len(d.get('MediaSources') or [])})")
             finally:
-                t.api.delete(f"/Items/{inserted}")
+                t.api.delete_inserted(inserted)
                 t.equal(in_library(imdb) + in_library(tmdb), 0, f"{label}: the movie was removed again")
             return asked[0]
 

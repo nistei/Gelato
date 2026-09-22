@@ -139,5 +139,5 @@ def run(t):
         t.check(distinct == len(rendered), f"{len(rendered)} seasons render {distinct} different posters")
     finally:
         if series:
-            t.api.delete(f"/Items/{series}")
+            t.api.delete_inserted(series)
         t.equal(in_library(stremio), 0, "the series was removed again")

@@ -35,7 +35,7 @@ def run(t):
             t.log(f"{kind} not in the library yet: {hit['Name']} ({stremio}), opened in {time.time() - t0:.1f}s as {item[:8]}, {n} streams")
             if n >= 2:
                 return hit, stremio, d
-            t.api.delete(f"/Items/{item}")
+            t.api.delete_inserted(item)
         return None, None, None
 
     def like_a_client(hit, inserted, label, series=False):
@@ -110,7 +110,7 @@ def run(t):
             if st in (200, 206):
                 t.check(len(body) == 1, f"stream.mkv on a hit nobody opened delivers bytes: {st}")
             if inserted:
-                t.api.delete(f"/Items/{inserted}")
+                t.api.delete_inserted(inserted)
             return
         t.log("no search hit outside the library for the container-route check")
 
@@ -128,7 +128,7 @@ def run(t):
             play(movie, "movie")
             like_a_client(hit["Id"], movie, "movie")
         finally:
-            t.api.delete(f"/Items/{movie}")
+            t.api.delete_inserted(movie)
             t.equal(in_library(stremio), 0, "the movie was removed again")
     else:
         t.log("no movie with streams outside the library among the search terms")
@@ -174,6 +174,7 @@ def run(t):
         listed = t.api.get(f"/Items?userId={t.api.user}&IncludeItemTypes=Series&Recursive=true&Ids={series}").get("Items", [])
         t.equal(len(listed), 1, "the series is in the library listing")
     finally:
+        t.api.settle_insert()
         t0 = time.time()
         t.api.delete(f"/Items/{series}")
         t.log(f"series removed again in {time.time() - t0:.0f}s")

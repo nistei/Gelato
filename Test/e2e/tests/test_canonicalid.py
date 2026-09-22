@@ -201,7 +201,7 @@ def run(t):
                 t.equal(len(rows), 1, f"{label}: one library item carries {tt} ({[r[1] for r in rows]})")
             finally:
                 for item in {r[0] for r in items_of(tt)} | ({inserted} if inserted else set()):
-                    t.api.delete(f"/Items/{item}")
+                    t.api.delete_inserted(item)
                 t.db.invalidate()
                 t.equal(in_library(tt) + in_library(twin), 0, f"{label}: the movie was removed again")
 
