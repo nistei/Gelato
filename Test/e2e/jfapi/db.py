@@ -1,22 +1,127 @@
-"""Queries against a snapshot of the instance's database, copied out of its Docker container.
+"""Queries against the instance's database, read in place by a sidecar container.
 
-The database is in use, so `jellyfin.db` with its -wal/-shm files is copied out of the container
-(`docker cp`) into `.cache/db/<pid>/` and snapshotted with sqlite3's `backup()`; every `connect()`
-takes a fresh copy. Ids are stored as GUIDs with dashes: compare with `norm()`.
+The sidecar (`<container>-sql`, `python:3-slim` with `--volumes-from` the instance) runs one Python
+process that answers a query per line on stdin, against the live `jellyfin.db`. SQLite in WAL mode
+lets it read next to Jellyfin, and a query takes milliseconds. Before, every check copied the whole
+database out of the container (`docker cp` and `backup()`), 500 MB on a copy of prod, several times
+per test: that was most of a run's time. `connect()` opens a read transaction in the sidecar, which
+sees one consistent state until it is closed, as the copy did.
+
+Without the sidecar (the image is missing, the container cannot be started) the copy is the fallback:
+`jellyfin.db` with its -wal/-shm files goes to `.cache/db/<pid>/` and is snapshotted with `backup()`.
+Ids are stored as GUIDs with dashes: compare with `norm()`.
 
 `JF_CONTAINER` names the container for the module-level `query()` used by the scripts in `tools/`.
+
+Random picks are seeded: SQLite's `random()` takes no seed, so a query ending in
+`order by random() limit n` is run in a fixed order and shuffled here with the run's seed, reset per
+test (`reseed`). The same seed on the same instance state picks the same items, alone or in a run.
 """
 import atexit
+import base64
+import json
 import os
+import random
+import re
 import shutil
 import sqlite3
 import subprocess
+import threading
 import time
 
 CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".cache", "db")
 CONTAINER = os.environ.get("JF_CONTAINER", "")
 STREAM_TAG = "%gelato-stream%"
 LINKED_ALTERNATE_VERSION = 3  # LinkedChildren.ChildType
+RANDOM_PICK = re.compile(r"\s+order by random\(\)\s+limit\s+(\d+)\s*$", re.IGNORECASE)
+
+
+SIDECAR_IMAGE = "python:3-slim"
+SIDECAR_SCRIPT = r"""
+import base64, json, sqlite3, sys
+def connect():
+    return sqlite3.connect("file:/config/data/jellyfin.db?mode=ro", uri=True, timeout=30, isolation_level=None)
+live, cons, n = connect(), {}, 0
+enc = lambda v: {"$b": base64.b64encode(bytes(v)).decode()} if isinstance(v, (bytes, memoryview)) else v
+for line in sys.stdin:
+    r = json.loads(line)
+    try:
+        if r["op"] == "open":
+            n += 1
+            cons[n] = connect()
+            cons[n].execute("BEGIN")
+            out = {"con": n}
+        elif r["op"] == "close":
+            c = cons.pop(r["con"], None)
+            if c is not None:
+                c.close()
+            out = {}
+        else:
+            c = cons[r["con"]] if r.get("con") else live
+            out = {"rows": [[enc(v) for v in row] for row in c.execute(r["sql"], r.get("params") or []).fetchall()]}
+    except Exception as e:
+        out = {"error": type(e).__name__ + ": " + str(e)}
+    print(json.dumps(out))
+    sys.stdout.flush()
+"""
+
+
+class Sidecar:
+    """A container next to the instance that reads its database in place (see the module doc)."""
+
+    def __init__(self, container):
+        self.name = f"{container}-sql"
+        self.lock = threading.Lock()
+        subprocess.run(["docker", "rm", "-f", self.name], capture_output=True)
+        r = subprocess.run(["docker", "run", "-d", "--name", self.name, "--volumes-from", container,
+                            SIDECAR_IMAGE, "sleep", "infinity"], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr.strip() or "docker run failed")
+        self.proc = subprocess.Popen(["docker", "exec", "-i", self.name, "python", "-u", "-c", SIDECAR_SCRIPT],
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                     text=True, encoding="utf-8")
+        atexit.register(self.close)
+        self.ask({"op": "q", "sql": "select 1"})
+
+    def ask(self, request):
+        with self.lock:
+            print(json.dumps(request), file=self.proc.stdin)
+            self.proc.stdin.flush()
+            line = self.proc.stdout.readline()
+        if not line:
+            raise sqlite3.DatabaseError(f"the database sidecar {self.name} stopped answering")
+        out = json.loads(line)
+        if "error" in out:
+            raise sqlite3.DatabaseError(out["error"])
+        return out
+
+    def rows(self, sql, params=(), con=None):
+        dec = lambda v: base64.b64decode(v["$b"]) if isinstance(v, dict) else v
+        out = self.ask({"op": "q", "sql": sql, "params": list(params), "con": con})
+        return [tuple(dec(v) for v in row) for row in out["rows"]]
+
+    def close(self):
+        try:
+            self.proc.stdin.close()
+            self.proc.wait(timeout=5)
+        except Exception:
+            pass
+        subprocess.run(["docker", "rm", "-f", self.name], capture_output=True)
+
+
+class SidecarConnection:
+    """What `connect()` hands out with a sidecar: a read transaction, one consistent state."""
+
+    def __init__(self, sidecar):
+        self.sidecar = sidecar
+        self.id = sidecar.ask({"op": "open"})["con"]
+
+    def execute(self, sql, params=()):
+        rows = self.sidecar.rows(sql, params, self.id)
+        return type("Cursor", (), {"fetchall": lambda _: rows, "fetchone": lambda _: rows[0] if rows else None})()
+
+    def close(self):
+        self.sidecar.ask({"op": "close", "con": self.id})
 
 
 def norm(guid):
@@ -28,15 +133,32 @@ class Db:
         self.container = container
         self.work = os.path.join(CACHE, str(os.getpid()))
         self._fresh = False  # the last snapshot still reflects the server (no API call since)
+        self.seed = None
+        self.rng = random.Random()
+        self.sidecar = None
+        if container:
+            try:
+                self.sidecar = Sidecar(container)
+            except Exception as e:
+                print(f"  database sidecar not available ({e}): copying the database for every check instead")
         atexit.register(lambda: shutil.rmtree(self.work, ignore_errors=True))
+
+    def reseed(self, seed, scope=""):
+        """Picks from here on follow `seed`, per `scope` (a test's name): a test run alone with the
+        run's seed picks what it picked in the run."""
+        self.seed = seed
+        self.rng = random.Random(f"{seed}:{scope}")
 
     def invalidate(self):
         """Called on every API call: the next query takes a new snapshot."""
         self._fresh = False
 
     def connect(self):
-        """A connection to a fresh snapshot; close it when done. Consecutive queries without an
-        API call in between share one copy."""
+        """A connection that sees one consistent state of the database; close it when done. With
+        the sidecar a read transaction, without it a fresh copy (consecutive queries without an API
+        call in between share one)."""
+        if self.sidecar is not None:
+            return SidecarConnection(self.sidecar)
         snap = os.path.join(self.work, "snapshot.db")
         if self._fresh and os.path.exists(snap):
             return sqlite3.connect(snap)
@@ -59,8 +181,17 @@ class Db:
     def query(self, sql, params=(), con=None):
         """Rows of one query, on a fresh snapshot unless a connection is given. A copy taken while
         the server writes can be unreadable: it is taken again."""
+        pick = RANDOM_PICK.search(sql)
+        if pick:
+            # All candidates in a fixed order, then the seeded shuffle: the rows' own order only
+            # decides which ones come first before shuffling, so it has to be stable too.
+            rows = self.query(sql[: pick.start()] + " order by 1", params, con)
+            self.rng.shuffle(rows)
+            return rows[: int(pick.group(1))]
         if con is not None:
             return con.execute(sql, params).fetchall()
+        if self.sidecar is not None:
+            return self.sidecar.rows(sql, params)
         for attempt in range(3):
             con = self.connect()
             try:

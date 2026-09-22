@@ -1,7 +1,11 @@
 """Test items picked from the instance: movies with several streams, a series with a full first
-season, a second user. Explicit ids from the command line take precedence; picks are memoized
-for the run."""
-import random
+season, a second user. Explicit ids from the command line take precedence.
+
+Each test gets its own view (`for_test`): its picks are memoized for the test, and an item an
+earlier test was handed is only handed out again when the candidates run out. The tests change
+what they get (mark, play, lock, delete), and a later test that got the same item found it
+changed and failed on it, which is why a failure in a run so often passed alone.
+"""
 
 from .db import STREAM_TAG, norm
 
@@ -14,11 +18,31 @@ MOVIE_SQL = (
 
 
 class Fixtures:
-    def __init__(self, api, db, overrides=None, log=print):
+    def __init__(self, api, db, overrides=None, log=print, taken=None, scope=""):
         self.api, self.db, self.log = api, db, log
-        self.given = {k: norm(v) for k, v in (overrides or {}).items() if v}
+        self.overrides = overrides or {}
+        self.given = {k: norm(v) for k, v in self.overrides.items() if v}
         self.cache = {}
-        self.used = set()
+        self.used = set()  # this test's picks: movie and movie2 are never the same item
+        self.taken = {} if taken is None else taken  # every test's picks: {item id: test}
+        self.scope = scope
+
+    def for_test(self, name):
+        """A view for one test: its own picks, avoiding what the tests before it were handed."""
+        return Fixtures(self.api, self.db, self.overrides, self.log, self.taken, name)
+
+    def _prefer_untaken(self, rows):
+        """Candidates nobody was handed yet first, then the rest, in the (seeded) order given."""
+        rows = [r for r in rows if r[0] not in self.used]
+        return [r for r in rows if r[0] not in self.taken] + [r for r in rows if r[0] in self.taken]
+
+    def _take(self, key, item_id, note):
+        by = self.taken.get(item_id)
+        self.log(f"fixture {key}: {note}" + (f", reused from {by} (no untouched candidate left)" if by and by != self.scope else ""))
+        self.cache[key] = item_id
+        self.used.add(item_id)
+        self.taken.setdefault(item_id, self.scope)
+        return item_id
 
     def _pick_movie(self, key, min_sources=2, unsynced=False):
         if key in self.cache:
@@ -29,28 +53,23 @@ class Fixtures:
             return self.given[key]
         extra = " and not exists (select 1 from BaseItems r where r.Tags like ? and lower(replace(r.PrimaryVersionId,'-',''))=lower(replace(b.Id,'-','')))" if unsynced else ""
         params = (STREAM_TAG, STREAM_TAG) if unsynced else (STREAM_TAG,)
-        rows = self.db.query(MOVIE_SQL + extra + " order by random() limit 12", params)
+        # A pool of 60, not 12: with the earlier tests' picks put last, a small pool ran out of
+        # untouched candidates long before the library did.
+        rows = self.db.query(MOVIE_SQL + extra + " order by random() limit 60", params)
         if not rows:  # a small library: any Gelato movie, then one inserted from search
-            rows = self.db.query(MOVIE_SQL.replace("and b.ProductionYear between 2005 and 2024 and b.CommunityRating >= 6.5 ", "") + extra + " order by random() limit 12", params)
+            rows = self.db.query(MOVIE_SQL.replace("and b.ProductionYear between 2005 and 2024 and b.CommunityRating >= 6.5 ", "") + extra + " order by random() limit 60", params)
         if not rows and not unsynced:
             rows = self.insert_from_search("Movie")
-        for item_id, name in rows:
-            if item_id in self.used:
-                continue
+        # Checking a candidate's streams asks the server for each, so only the first dozen are asked.
+        for item_id, name in self._prefer_untaken(rows)[:12]:
             n = len(self.api.sources(item_id)) if not unsynced else min_sources
             if n >= min_sources:
-                self.log(f"fixture {key}: {name} ({item_id[:8]}, {n} sources)" if not unsynced else f"fixture {key}: {name} ({item_id[:8]}, not synced yet)")
-                self.cache[key] = item_id
-                self.used.add(item_id)
-                return item_id
+                return self._take(key, item_id, f"{name} ({item_id[:8]}, {n} sources)" if not unsynced else f"{name} ({item_id[:8]}, not synced yet)")
         if unsynced:
             return None
         for item_id, name in self.insert_from_search("Movie"):
             if item_id not in self.used:
-                self.log(f"fixture {key}: {name} ({item_id[:8]})")
-                self.cache[key] = item_id
-                self.used.add(item_id)
-                return item_id
+                return self._take(key, item_id, f"{name} ({item_id[:8]})")
         raise RuntimeError(f"no movie with at least {min_sources} streams among 12 random picks; pass --{key}")
 
     def movie(self):
@@ -97,17 +116,15 @@ class Fixtures:
             # nothing watched by the user yet: Next Up would start after the last watched episode
             "and not exists (select 1 from UserData u join BaseItems e on e.Id=u.ItemId where e.SeriesId=s.Id "
             "and u.Played=1 and lower(replace(u.UserId,'-',''))=?) "
-            "order by random() limit 8", (STREAM_TAG, min_episodes, norm(self.api.user)))
+            "order by random() limit 40", (STREAM_TAG, min_episodes, norm(self.api.user)))
         if not rows:
             rows = self.insert_from_search("Series")
-        for item_id, name in rows:
+        for item_id, name in self._prefer_untaken(rows)[:8]:
             eps = self.episodes(item_id, 1)
             if len(eps) < min_episodes:
                 continue
             if len(self.api.sources(eps[0]["Id"])) >= 2:
-                self.log(f"fixture series: {name} ({item_id[:8]}, {len(eps)} episodes in season 1)")
-                self.cache["series"] = item_id
-                return item_id
+                return self._take("series", item_id, f"{name} ({item_id[:8]}, {len(eps)} episodes in season 1)")
         raise RuntimeError("no series with a streamed first season among 8 random picks; pass --series")
 
     SEARCH_TERMS = {"Movie": ["Inception", "Interstellar", "The Dark Knight", "Dune", "Oppenheimer", "Parasite"],

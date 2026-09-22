@@ -4,6 +4,11 @@ A test is a module in tests/ with `DESCRIPTION`, an optional `DESTRUCTIVE = True
 observes through `t.api` / `t.db`, asks `t.movie()` and friends for items, and records verdicts
 with `t.check(condition, "what should hold")`. `t.skip("why")` leaves the test out, `t.log()`
 keeps notes that are shown on failure or with -v.
+
+`t.require(condition, "why")` skips when the instance lacks what the test needs (artwork, a plugin,
+enough matching items): a missing prerequisite is no failure. `t.known(condition, "what should
+hold", "where it is written down")` is a check for a documented, open bug: when it fails the test
+ends as KNOWN, not FAIL, and the summary names the record. Anything new still fails.
 """
 import importlib
 import os
@@ -27,6 +32,7 @@ class Context:
         self._user2 = None
         self.verbose = verbose
         self.lines, self.failures, self.passed = [], [], 0
+        self.known_failures = []
 
     # ---- reporting
 
@@ -50,6 +56,20 @@ class Context:
 
     def skip(self, reason):
         raise Skip(reason)
+
+    def require(self, condition, reason):
+        """Skips unless the instance has what the test needs."""
+        if not condition:
+            raise Skip(reason)
+
+    def known(self, condition, message, record):
+        """A check that fails because of a documented open bug (`record` says where): it does not
+        fail the test, the test ends as KNOWN."""
+        if condition:
+            return self.check(True, message)
+        self.known_failures.append((message, record))
+        self.log("KNOWN", f"{message} [{record}]")
+        return False
 
     # ---- items and users
 
@@ -108,6 +128,28 @@ def make_user2(api, name=SECOND_USER, on_call=None):
     return factory
 
 
+def quiesce(api, db, log, timeout=180):
+    """Waits until the server is idle: no scheduled task running and the database files unchanged
+    over two looks two seconds apart. A test left a refresh, a scan or a task behind it, and the
+    next one ran into it: its counts moved under it and its queries waited on the database.
+    Returns the seconds waited; gives up after `timeout` and says so."""
+    t0 = time.time()
+    stat = "stat -c '%n %s %y' /config/data/jellyfin.db* 2>/dev/null"
+    last, running = None, []
+    while time.time() - t0 < timeout:
+        try:
+            running = [t["Name"] for t in api.get("/ScheduledTasks") if t.get("State") != "Idle"]
+        except ApiError:
+            running = []
+        now = db.sh(stat)
+        if not running and now == last:
+            return time.time() - t0
+        last = now
+        time.sleep(2)
+    log(f"server not idle after {timeout}s (running: {', '.join(running) or 'none'}, database still written), going on")
+    return time.time() - t0
+
+
 def load_tests(tests_dir):
     """{name: module} for tests/test_*.py, in the order of ORDER then alphabetically."""
     names = sorted(f[5:-3] for f in os.listdir(tests_dir) if f.startswith("test_") and f.endswith(".py"))
@@ -121,11 +163,11 @@ ORDER = ["sync", "rowpage", "images", "deadimage", "people", "seasons", "seasonp
 
 
 def run_test(name, module, ctx):
-    """Runs one test module: (status, seconds). status is ok, FAIL, SKIP or ERROR."""
+    """Runs one test module: (status, seconds). status is ok, FAIL, KNOWN, SKIP or ERROR."""
     t0 = time.time()
     try:
         module.run(ctx)
-        status = "FAIL" if ctx.failures else "ok"
+        status = "FAIL" if ctx.failures else "KNOWN" if ctx.known_failures else "ok"
     except Skip as e:
         ctx.log("skipped:", e)
         status = "SKIP"

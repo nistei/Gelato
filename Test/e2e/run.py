@@ -7,6 +7,19 @@
     python run.py --container <name> --destructive   # also the tests that reconfigure the instance
     python run.py list                               # what there is
     python run.py --container <name> play --movie <id> --row <id>   # explicit items instead of picks
+    python run.py --container <name> --seed 1234 lockmeta   # the picks lockmeta got in a run with that seed
+
+How a run keeps its results comparable:
+- Picks are seeded. The seed is printed at the start; a test run alone with it picks what it
+  picked in the run (on the same instance state). Each test gets its own picks, and an item an
+  earlier test was handed is only handed out again when the candidates run out.
+- Before each test the run waits until the server is idle (no scheduled task, database quiet).
+- The addon is recorded: catalogs, metas and the manifest come from `.cache/addon/` after their
+  first request, streams always from the addon (--addon live asks the addon for everything,
+  --addon refresh records anew).
+- A test that fails runs once more alone at the end, on items no other test touched. Passing then
+  makes it "flaky", reported but not failing the run; failing again is a failure. --no-rerun skips it.
+- A check for a documented open bug ends as KNOWN; a missing prerequisite (artwork, a plugin) skips.
 
 Environment variables stand in for the options: JF_CONTAINER, JF_URL, JF_ADMINUSER, JF_ADMINPASSWORD,
 JF_ADDON_URL. An empty instance (wizard not completed, or Gelato without addon URL and libraries)
@@ -17,17 +30,18 @@ run creates a second user for the multi-user tests when it is missing.
 """
 import argparse
 import os
+import random
 import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from jfapi import bootstrap  # noqa: E402
+from jfapi import addon, bootstrap  # noqa: E402
 from jfapi.api import Api  # noqa: E402
 from jfapi.db import Db  # noqa: E402
 from jfapi.fixtures import Fixtures  # noqa: E402
-from jfapi.testing import SECOND_USER, Context, load_tests, make_user2, run_test  # noqa: E402
+from jfapi.testing import SECOND_USER, Context, load_tests, make_user2, quiesce, run_test  # noqa: E402
 
 
 def preflight(api, db, selected):
@@ -65,6 +79,10 @@ def main():
     p.add_argument("--destructive", action="store_true", help="include the tests that reconfigure the instance (full library scan, library-wide subtitle task, a per-user library)")
     p.add_argument("-v", "--verbose", action="store_true", help="print every test's notes, not only on failure")
     p.add_argument("-x", "--exitfirst", action="store_true", help="stop at the first failure")
+    p.add_argument("--seed", type=int, default=None, help="seed for the picks (default: a new one, printed)")
+    p.add_argument("--addon", choices=("replay", "live", "refresh"), default="replay",
+                   help="replay: catalogs and metas from the recording, streams live (default); live: the addon for everything; refresh: record anew")
+    p.add_argument("--no-rerun", action="store_true", help="do not run failed tests again alone")
     args = p.parse_args()
 
     os.environ.setdefault("PYTHONUTF8", "1")
@@ -117,28 +135,81 @@ def main():
         return 2
     overrides = {k: getattr(args, f"fx_{k}") for k in ("movie", "movie2", "row", "series")}
     fixtures = Fixtures(api, db, overrides, log=lambda m: print("  " + m))
+    seed = args.seed if args.seed is not None else random.randrange(1, 10**6)
+    print(f"  seed {seed} (a test run alone with --seed {seed} picks what it picked here)")
 
-    results = []
+    port = args.url.rstrip("/").rsplit(":", 1)[-1]
+    cfg = addon.restore_left_over(api, bootstrap.GELATO, port, say)
+    recorder = None
+    if args.addon != "live" and cfg.get("Url"):
+        recorder = addon.AddonRecorder(cfg["Url"], refresh=args.addon == "refresh")
+        reach = db.sh(f"curl -s -m 5 -o /dev/null -w '%{{http_code}}' {recorder.url}").strip()
+        if reach == "200":
+            addon.switch(api, bootstrap.GELATO, recorder.url, port, keep=cfg["Url"])
+            print(f"  addon: catalogs and metas recorded, streams live (proxy on port {recorder.port})")
+        else:
+            print(f"  addon: the container cannot reach the proxy on port {recorder.port} ({reach or 'no answer'}), asking the addon directly")
+            recorder.close()
+            recorder = None
+    try:
+        return run_selected(args, api, db, fixtures, selected, seed)
+    finally:
+        if recorder:
+            addon.switch(api, bootstrap.GELATO, cfg["Url"], port)
+            s = recorder.stats
+            print(f"  addon: {s['replayed']} answers replayed, {s['recorded']} recorded, {s['forwarded']} forwarded")
+            recorder.close()
+
+
+def run_one(args, api, db, fixtures, name, mod, seed, scope, label):
+    """Waits for an idle server, then runs one test with its own seeded picks."""
+    waited = quiesce(api, db, lambda m: print("      " + m))
+    db.reseed(seed, scope)
+    ctx = Context(api, db, fixtures.for_test(scope), make_user2(api, on_call=db.invalidate), verbose=args.verbose)
+    note = f"  (waited {waited:.0f}s for the server)" if waited >= 5 else ""
+    print(f"{label} {name:12} {mod.DESCRIPTION}{note}")
+    status, seconds = run_test(name, mod, ctx)
+    print(f"           -> {status} ({ctx.passed} check(s) passed, {len(ctx.failures)} failed, {seconds:.0f}s)")
+    if status in ("FAIL", "ERROR") and not args.verbose:
+        for line in ctx.lines:
+            print("      " + line)
+    if status in ("SKIP", "KNOWN") and not args.verbose:
+        for line in ctx.lines:
+            if line.startswith(("skipped", "KNOWN")):
+                print("      " + line)
+    return status, ctx
+
+
+def run_selected(args, api, db, fixtures, selected, seed):
+    results, known = {}, []
     t0 = time.time()
     for i, (name, mod) in enumerate(selected, 1):
-        ctx = Context(api, db, fixtures, make_user2(api, on_call=db.invalidate), verbose=args.verbose)
-        print(f"[{i:2}/{len(selected)}] {name:12} {mod.DESCRIPTION}")
-        status, seconds = run_test(name, mod, ctx)
-        results.append((name, status))
-        print(f"           -> {status} ({ctx.passed} check(s) passed, {len(ctx.failures)} failed, {seconds:.0f}s)")
-        if status in ("FAIL", "ERROR") and not args.verbose:
-            for line in ctx.lines:
-                print("      " + line)
-        if status == "SKIP" and not args.verbose:
-            print("      " + ctx.lines[-1])
+        status, ctx = run_one(args, api, db, fixtures, name, mod, seed, name, f"[{i:2}/{len(selected)}]")
+        results[name] = status
+        known += [(name, m, r) for m, r in ctx.known_failures]
         if status in ("FAIL", "ERROR") and args.exitfirst:
             break
 
-    counts = {s: sum(1 for _, st in results if st == s) for s in ("ok", "FAIL", "ERROR", "SKIP")}
-    print(f"\n{counts['ok']} passed, {counts['FAIL']} failed, {counts['ERROR']} errored, {counts['SKIP']} skipped in {time.time() - t0:.0f}s")
-    for name, st in results:
+    # A failure in a run is not yet a finding: the tests before it churned the library. Once more
+    # alone, on items nobody touched, tells a bug from interference.
+    failed = [(n, m) for n, m in selected if results.get(n) in ("FAIL", "ERROR")]
+    if failed and not args.no_rerun and not args.exitfirst and len(selected) > 1:
+        print(f"\n== {len(failed)} failed test(s) once more, alone")
+        for name, mod in failed:
+            status, _ = run_one(args, api, db, fixtures, name, mod, seed, f"{name} (alone)", "[alone]")
+            if status in ("ok", "KNOWN"):
+                results[name] = "flaky"
+
+    counts = {s: sum(1 for st in results.values() if st == s) for s in ("ok", "FAIL", "ERROR", "flaky", "KNOWN", "SKIP")}
+    print(f"\n{counts['ok']} passed, {counts['FAIL']} failed, {counts['ERROR']} errored, {counts['flaky']} flaky, "
+          f"{counts['KNOWN']} known, {counts['SKIP']} skipped in {time.time() - t0:.0f}s (seed {seed})")
+    for name, st in results.items():
         if st in ("FAIL", "ERROR"):
             print(f"  {st}: {name}")
+        elif st == "flaky":
+            print(f"  flaky: {name} (failed in the run, passed alone)")
+    for name, message, record in known:
+        print(f"  known: {name}: {message} [{record}]")
     return 1 if counts["FAIL"] or counts["ERROR"] else 0
 
 
