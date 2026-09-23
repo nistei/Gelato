@@ -159,7 +159,7 @@ def load_tests(tests_dir):
 
 
 ORDER = ["sync", "rowpage", "images", "deadimage", "people", "seasons", "seasonposters", "counts", "lists", "insert", "useractions", "tasks", "catalogs", "searchfail", "searchtypes", "searchdupes", "localfind", "searchpage", "searchscope", "metaid", "canonicalid", "searchreads", "unreleased", "releasedates", "nativedates", "play", "streamurl", "escapedurl", "nextup", "users",
-         "concurrent", "searchrace", "playlist", "rowops", "apikeydownload", "apikeyinsert", "splitmerge", "webhook", "race", "seriesdelete", "subrow", "upgrade", "scan", "localtreescan", "playsubs", "subs", "seriestrees", "addonid", "lockmeta", "localtreetag", "localtreeclean", "embeddedtitles", "trickplay", "chapters", "peruser", "purgeall"]
+         "concurrent", "searchrace", "playlist", "rowops", "apikeydownload", "apikeyinsert", "splitmerge", "webhook", "race", "seriesdelete", "subrow", "upgrade", "purgelog", "scan", "localtreescan", "playsubs", "subs", "seriestrees", "addonid", "lockmeta", "localtreetag", "localtreeclean", "embeddedtitles", "trickplay", "chapters", "peruser", "purgeall"]
 
 
 def run_test(name, module, ctx):
