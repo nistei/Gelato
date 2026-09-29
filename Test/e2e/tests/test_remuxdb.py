@@ -108,6 +108,7 @@ class Stub:
         self.streams = {}  # "/stream/<type>/<id>.json" -> streams
         self.versions = {}  # (imdb, season, episode) -> versions
         self.lookups, self.submissions = [], []  # (path, headers) / (body, headers)
+        self.stream_agents = []  # User-Agent of each stream request the stub answered
         self.lock = threading.Lock()
         outer = self
 
@@ -146,6 +147,8 @@ class Stub:
                 if url.path.startswith("/addon/"):
                     path = url.path[len("/addon"):]
                     if path in outer.streams:
+                        with outer.lock:
+                            outer.stream_agents.append(self.headers.get("User-Agent") or "")
                         return self.reply(200, json.dumps({"streams": outer.streams[path]}).encode())
                     return self.forward(path + (f"?{url.query}" if url.query else ""))
                 return self.reply(404, b"", None)
@@ -297,6 +300,10 @@ def run(t):
         sources = by_name(item)
         t.equal(sorted(k for k in sources if k.startswith("remuxdb-")), [f"remuxdb-{k}" for k in "ABCDE"],
                 "the movie lists the stub's five streams")
+        # AIOStreams only sends its stream data (the torrent's hash) to a User-Agent it takes for
+        # another AIOStreams, unless its operator turns it on for everyone.
+        t.check(stub.stream_agents and all(a.startswith("AIOStreams/") for a in stub.stream_agents),
+                f"streams are asked for as AIOStreams ({sorted(set(stub.stream_agents))})")
         movie_lookups = [(p, h) for p, h in stub.lookups if f"/api/media/{imdb}/versions" in p]
         t.equal(len(movie_lookups), 1, "one RemuxDB lookup for the movie")
         if movie_lookups:
