@@ -1,4 +1,4 @@
-DESCRIPTION = "RemuxDB: a stream it knows gets its tracks, runtime, size and chapters when synced and plays without a probe; a probed file it does not know is submitted anonymously, only with a torrent and only when contributing is on; episodes are looked up by season and episode"
+DESCRIPTION = "RemuxDB: a stream it knows gets its tracks, runtime, size and chapters when synced and plays without a probe; a probed file it does not know is submitted anonymously, only with a torrent, only when it runs as long as the title and only when contributing is on; episodes are looked up by season and episode"
 DESTRUCTIVE = True  # points Gelato's addon and RemuxDB at a stub on the host for the run of the test, then restores and resyncs
 
 import json
@@ -16,13 +16,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from jfapi.bootstrap import GELATO
 from jfapi.probe import log_count, movie_library
 
-CLIP_SECONDS = 150  # over the 2 minutes below which playback always probes
+TRAILER_SECONDS = 150  # over the 2 minutes below which playback always probes
 CLIP_IN_CONTAINER = "/tmp/jfapi-remuxdb-clip.mkv"
 FFMPEG = "/usr/lib/jellyfin-ffmpeg/ffmpeg"
 
 HASH_A = "a" * 39 + "1"  # known to RemuxDB, matched by torrent
 HASH_D = "d" * 39 + "4"  # unknown: probed and submitted
 HASH_E = "e" * 39 + "5"  # unknown, played with contributing off
+HASH_T = "7" * 40  # unknown, a trailer filed under the movie: probed, never submitted
+SIZE_T = 361_000_007
 HASH_EP = "f" * 39 + "6"  # an episode's file, known
 SIZE_A, SIZE_B, SIZE_C, SIZE_D, SIZE_E, SIZE_EP = (
     41_000_000_001, 9_000_000_002, 7_000_000_003, 5_000_000_004, 4_000_000_005, 2_000_000_006)
@@ -30,7 +32,7 @@ SIZE_A, SIZE_B, SIZE_C, SIZE_D, SIZE_E, SIZE_EP = (
 
 def movie_streams(base):
     """The stub's streams for the movie: A known by torrent, B known by size only, C unknown and
-    without a torrent, D and E unknown with one."""
+    without a torrent, D and E unknown with one, T a trailer with one."""
     def stream(key, filename, video_size, data=None):
         s = {"name": f"remuxdb-{key}", "description": filename, "url": f"{base}/clip/{key}.mkv",
              "behaviorHints": {"bingeGroup": f"remuxdb-{key}", "filename": filename, "videoSize": video_size}}
@@ -44,6 +46,7 @@ def movie_streams(base):
         stream("C", "Test.Movie.C.mkv", SIZE_C),
         stream("D", "Test.Movie.D.mkv", SIZE_D, {"size": SIZE_D, "torrent": {"infoHash": HASH_D}}),
         stream("E", "Test.Movie.E.mkv", SIZE_E, {"size": SIZE_E, "torrent": {"infoHash": HASH_E}}),
+        stream("T", "Test.Movie.Official.Teaser.Trailer.mkv", SIZE_T, {"size": SIZE_T, "torrent": {"infoHash": HASH_T}}),
     ]
 
 
@@ -98,13 +101,14 @@ def simple_version(seconds, size, sources, width=1920, height=1080):
 class Stub:
     """The addon and RemuxDB in one server. The addon part forwards to the real addon except the
     streams of the test's movie and episode; the RemuxDB part answers their versions and records
-    every request. /clip/ serves a short real video, so playback has something to probe."""
+    every request. /clip/ serves real videos, so playback has something to probe: T.mkv a short
+    one, the rest one as long as the movie."""
 
-    def __init__(self, upstream, clip):
+    def __init__(self, upstream, clip, trailer):
         self.upstream = upstream.rstrip("/")
         if self.upstream.endswith("/manifest.json"):
             self.upstream = self.upstream[: -len("/manifest.json")]
-        self.clip = clip
+        self.clip, self.trailer = clip, trailer
         self.streams = {}  # "/stream/<type>/<id>.json" -> streams
         self.versions = {}  # (imdb, season, episode) -> versions
         self.lookups, self.submissions = [], []  # (path, headers) / (body, headers)
@@ -130,7 +134,7 @@ class Stub:
             def do_GET(self):
                 url = urllib.parse.urlsplit(self.path)
                 if url.path.startswith("/clip/"):
-                    return self.serve_clip()
+                    return self.serve_clip(outer.trailer if url.path == "/clip/T.mkv" else outer.clip)
                 if url.path.startswith("/remuxdb/api/media/") and url.path.endswith("/versions"):
                     # Like RemuxDB: an episode's season and episode are part of the id
                     # (tt0903747:1:2), query parameters are ignored and a bare id is the title.
@@ -156,8 +160,12 @@ class Stub:
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
                 if self.path == "/remuxdb/api/mediainfo":
-                    with outer.lock:
-                        outer.submissions.append((body.decode("utf-8", "replace"), dict(self.headers)))
+                    raw = body.decode("utf-8", "replace")
+                    # Only the test's own files: a stream someone plays on the instance meanwhile
+                    # is submitted here too.
+                    if any(h in raw for h in (HASH_A, HASH_D, HASH_E, HASH_T, HASH_EP)) or "Test.Movie" in raw:
+                        with outer.lock:
+                            outer.submissions.append((raw, dict(self.headers)))
                     return self.reply(201, json.dumps({"id": "00000000-0000-0000-0000-000000000000"}).encode())
                 return self.reply(404, b"", None)
 
@@ -171,8 +179,7 @@ class Stub:
                 except OSError:
                     return self.reply(502, b"", None)
 
-            def serve_clip(self):
-                data = outer.clip
+            def serve_clip(self, data):
                 m = re.match(r"bytes=(\d+)-(\d*)", self.headers.get("Range") or "")
                 if not m:
                     return self.reply(200, data, "video/x-matroska", {"Accept-Ranges": "bytes"})
@@ -195,11 +202,12 @@ class Stub:
         self.server.shutdown()
 
 
-def make_clip(t):
-    """A 150 s 320x180 h264/aac mkv, made by the container's ffmpeg and copied out."""
-    t.sh(f"{FFMPEG} -v error -y -f lavfi -i testsrc2=duration={CLIP_SECONDS}:size=320x180:rate=24 "
-         f"-f lavfi -i sine=frequency=440:duration={CLIP_SECONDS} -c:v libx264 -preset ultrafast -crf 40 "
-         f"-c:a aac -b:a 32k {CLIP_IN_CONTAINER}")
+def make_clip(t, seconds, size, rate):
+    """An h264/aac mkv, made by the container's ffmpeg and copied out. A movie-length one is kept
+    small and quick to make with a tiny picture at a low frame rate."""
+    t.sh(f"{FFMPEG} -v error -y -f lavfi -i testsrc2=duration={seconds}:size={size}:rate={rate} "
+         f"-f lavfi -i sine=frequency=440:sample_rate=8000:duration={seconds} -c:v libx264 -preset ultrafast "
+         f"-crf 40 -c:a aac -ac 1 -b:a 16k {CLIP_IN_CONTAINER}")
     local = os.path.join(tempfile.gettempdir(), "jfapi-remuxdb-clip.mkv")
     subprocess.run(["docker", "cp", f"{t.db.container}:{CLIP_IN_CONTAINER}", local], capture_output=True)
     t.sh(f"rm -f {CLIP_IN_CONTAINER}")
@@ -263,9 +271,10 @@ def run(t):
 
     episode = next((e for e in t.episodes() if re.fullmatch(r"tt\d+:1:\d+", t.fixtures.stremio_id(e["Id"]) or "")), None)
 
-    clip = make_clip(t)
-    t.require(clip, "ffmpeg in the container could not make a test clip")
-    stub = Stub(original["Url"], clip)
+    clip = make_clip(t, round(seconds), "128x72", 2)
+    trailer = make_clip(t, TRAILER_SECONDS, "320x180", 24)
+    t.require(clip and trailer, "ffmpeg in the container could not make the test clips")
+    stub = Stub(original["Url"], clip, trailer)
     try:
         if "ok" not in t.sh(f"curl -s -m 5 -o /dev/null {stub.base}/clip/x.mkv && echo ok"):
             t.skip(f"the container cannot reach the host on port {stub.port}")
@@ -298,8 +307,8 @@ def run(t):
         # ---- sync: a lookup, and the tracks of the known files
         item = t.api.item(movie)
         sources = by_name(item)
-        t.equal(sorted(k for k in sources if k.startswith("remuxdb-")), [f"remuxdb-{k}" for k in "ABCDE"],
-                "the movie lists the stub's five streams")
+        t.equal(sorted(k for k in sources if k.startswith("remuxdb-")), [f"remuxdb-{k}" for k in "ABCDET"],
+                "the movie lists the stub's six streams")
         # AIOStreams only sends its stream data (the torrent's hash) to a User-Agent it takes for
         # another AIOStreams, unless its operator turns it on for everyone.
         t.check(stub.stream_agents and all(a.startswith("AIOStreams/") for a in stub.stream_agents),
@@ -339,39 +348,39 @@ def run(t):
         t.equal(streams_of(sources.get("remuxdb-D", {}), "Video"), [],
                 "D: another file of the same torrent is not taken for it")
 
-        # ---- playback: A plays without a probe, C and D are probed, only D is submitted
+        # ---- playback: A plays without a probe, C, D and T are probed, only D is submitted
         before = probes_of(t, a)
         pi = playback_info(t, movie, a)
         played = next((s for s in pi.get("MediaSources", []) if s.get("Id") == a.get("Id")), {})
         t.equal(probes_of(t, a) - before, 0, "A plays without a probe")
         t.equal([v.get("Codec") for v in streams_of(played, "Video")], ["hevc"], "A's PlaybackInfo has RemuxDB's tracks")
 
-        for key in "CD":
+        for key, width in (("C", 128), ("D", 128), ("T", 320)):
             s = sources.get(f"remuxdb-{key}", {})
             before = probes_of(t, s)
             pi = playback_info(t, movie, s)
             played = next((x for x in pi.get("MediaSources", []) if x.get("Id") == s.get("Id")), {})
             t.equal(probes_of(t, s) - before, 1, f"{key} is probed at playback")
-            t.equal([(v.get("Codec"), v.get("Width")) for v in streams_of(played, "Video")], [("h264", 320)],
-                    f"{key}: the probe found the clip's video")
+            t.equal([(v.get("Codec"), v.get("Width")) for v in streams_of(played, "Video")], [("h264", width)],
+                    f"{key}: the probe found its clip's video")
 
         t.check(wait_for(lambda: len(stub.submissions) >= 1, 30), "a submission arrives")
         time.sleep(3)
-        t.equal(len(stub.submissions), 1, "one submission: D, not C (no torrent)")
+        t.equal(len(stub.submissions), 1, "one submission: D, not C (no torrent) nor T (a trailer's runtime)")
         if stub.submissions:
             raw, headers = stub.submissions[0]
             headers = {k.lower(): v for k, v in headers.items()}
             sub = json.loads(raw)
             t.equal((sub.get("kind"), sub.get("filename"), sub.get("torrent_info_hash"), sub.get("size"), sub.get("container")),
                     ("movie", "Test.Movie.D.mkv", HASH_D, SIZE_D, "mkv"), "D's submission: kind, file, torrent, size, container")
-            t.check(abs((sub.get("duration") or 0) - CLIP_SECONDS) < 2, f"D's submission: the probed duration ({sub.get('duration')})")
+            t.check(abs((sub.get("duration") or 0) - round(seconds)) < 2, f"D's submission: the probed duration ({sub.get('duration')})")
             t.equal((sub.get("external_ids") or {}).get("imdb_id"), imdb, "D's submission: the IMDb id")
             tracks = sub.get("tracks") or []
             t.equal([(x.get("kind"), x.get("idx"), x.get("codec")) for x in tracks],
                     [("video", 0, "h264"), ("audio", 1, "aac")], "D's submission: the probed tracks with ffmpeg's indexes")
             v = next((x for x in tracks if x.get("kind") == "video"), {})
-            t.check(v.get("width") == 320 and v.get("height") == 180 and abs((v.get("fps") or 0) - 24) < 0.01,
-                    f"D's submission: video 320x180 at 24 fps ({v.get('width')}x{v.get('height')} {v.get('fps')})")
+            t.check(v.get("width") == 128 and v.get("height") == 72 and abs((v.get("fps") or 0) - 2) < 0.01,
+                    f"D's submission: video 128x72 at 2 fps ({v.get('width')}x{v.get('height')} {v.get('fps')})")
             aud = next((x for x in tracks if x.get("kind") == "audio"), {})
             t.check(aud.get("channels") and aud.get("sample_rate"), f"D's submission: audio channels and sample rate ({aud})")
             t.equal(sub.get("client_id"), headers.get("x-client-id"), "the submission's client id is the header's")
