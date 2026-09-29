@@ -26,6 +26,8 @@ HASH_E = "e" * 39 + "5"  # unknown, played with contributing off
 HASH_T = "7" * 40  # unknown, a trailer filed under the movie: probed, never submitted
 SIZE_T = 361_000_007
 HASH_EP = "f" * 39 + "6"  # an episode's file, known
+HASH_EP2 = "9" * 40  # an episode's file, unknown: probed and submitted with the episode's own ids
+SIZE_EP2 = 1_500_000_008
 SIZE_A, SIZE_B, SIZE_C, SIZE_D, SIZE_E, SIZE_EP = (
     41_000_000_001, 9_000_000_002, 7_000_000_003, 5_000_000_004, 4_000_000_005, 2_000_000_006)
 
@@ -109,6 +111,7 @@ class Stub:
         if self.upstream.endswith("/manifest.json"):
             self.upstream = self.upstream[: -len("/manifest.json")]
         self.clip, self.trailer = clip, trailer
+        self.extra_clips = {}  # "/clip/<name>.mkv" -> bytes
         self.streams = {}  # "/stream/<type>/<id>.json" -> streams
         self.versions = {}  # (imdb, season, episode) -> versions
         self.lookups, self.submissions = [], []  # (path, headers) / (body, headers)
@@ -134,7 +137,8 @@ class Stub:
             def do_GET(self):
                 url = urllib.parse.urlsplit(self.path)
                 if url.path.startswith("/clip/"):
-                    return self.serve_clip(outer.trailer if url.path == "/clip/T.mkv" else outer.clip)
+                    return self.serve_clip(outer.extra_clips.get(url.path)
+                                           or (outer.trailer if url.path == "/clip/T.mkv" else outer.clip))
                 if url.path.startswith("/remuxdb/api/media/") and url.path.endswith("/versions"):
                     # Like RemuxDB: an episode's season and episode are part of the id
                     # (tt0903747:1:2), query parameters are ignored and a bare id is the title.
@@ -163,7 +167,7 @@ class Stub:
                     raw = body.decode("utf-8", "replace")
                     # Only the test's own files: a stream someone plays on the instance meanwhile
                     # is submitted here too.
-                    if any(h in raw for h in (HASH_A, HASH_D, HASH_E, HASH_T, HASH_EP)) or "Test.Movie" in raw:
+                    if any(h in raw for h in (HASH_A, HASH_D, HASH_E, HASH_T, HASH_EP, HASH_EP2)) or "Test.Movie" in raw:
                         with outer.lock:
                             outer.submissions.append((raw, dict(self.headers)))
                     return self.reply(201, json.dumps({"id": "00000000-0000-0000-0000-000000000000"}).encode())
@@ -295,7 +299,11 @@ def run(t):
             stub.streams[f"/stream/series/{ep_id}.json"] = [
                 {"name": "remuxdb-EP", "url": f"{stub.base}/clip/EP.mkv",
                  "behaviorHints": {"bingeGroup": "remuxdb-EP", "filename": "Test.Show.S01E01.mkv", "videoSize": SIZE_EP},
-                 "streamData": {"size": SIZE_EP, "torrent": {"infoHash": HASH_EP, "fileIdx": 3}}}]
+                 "streamData": {"size": SIZE_EP, "torrent": {"infoHash": HASH_EP, "fileIdx": 3}}},
+                {"name": "remuxdb-EP2", "url": f"{stub.base}/clip/EP2.mkv",
+                 "behaviorHints": {"bingeGroup": "remuxdb-EP2", "filename": "Test.Show.S01E01.Other.mkv", "videoSize": SIZE_EP2},
+                 "streamData": {"size": SIZE_EP2, "torrent": {"infoHash": HASH_EP2, "fileIdx": 0}}}]
+            stub.extra_clips["/clip/EP2.mkv"] = make_clip(t, round(ep_seconds), "128x72", 2)
             stub.versions[(series_imdb, int(season), int(number))] = [
                 simple_version(ep_seconds, SIZE_EP, [{"kind": "torrent", "filename": "Show.S01/Test.Show.S01E01.mkv",
                                                       "torrent_info_hash": HASH_EP, "torrent_file_idx": 3}], 3840, 2160)]
@@ -409,6 +417,24 @@ def run(t):
             t.equal([(v.get("Codec"), v.get("Width")) for v in streams_of(ep, "Video")], [("h264", 3840)],
                     "the episode's stream gets its tracks")
             t.equal(ep.get("Size"), SIZE_EP, "the episode's stream: size")
+
+            # An unknown file of the episode goes out with the episode's own ids, as Remux sends
+            # them; with the series' IMDb id RemuxDB took the submission but never listed it.
+            t.api.post(cfg_path, {**t.api.get(cfg_path), "RemuxDbContribute": True})
+            ep_ids = {k.lower(): v for k, v in (t.api.item(episode["Id"], "ProviderIds").get("ProviderIds") or {}).items()}
+            ep2 = by_name(t.api.item(episode["Id"])).get("remuxdb-EP2", {})
+            playback_info(t, episode["Id"], ep2)
+            mine = lambda: [json.loads(r) for r, _ in stub.submissions if HASH_EP2 in r]
+            t.check(wait_for(lambda: mine(), 30), "the unknown episode file is submitted")
+            sub = (mine() or [{}])[0]
+            ids = sub.get("external_ids") or {}
+            t.equal((sub.get("kind"), sub.get("season"), sub.get("episode")), ("episode", int(season), int(number)),
+                    "the episode's submission: kind, season, episode")
+            t.equal(ids.get("imdb_id"), ep_ids.get("imdb") or series_imdb,
+                    "the episode's submission: the episode's own IMDb id where it has one" + ("" if ep_ids.get("imdb") else " (it has none: the series')"))
+            for key in ("tvdb", "tmdb"):
+                expected = int(ep_ids[key]) if (ep_ids.get(key) or "").isdigit() else None
+                t.equal(ids.get(f"{key}_id"), expected, f"the episode's submission: the episode's {key.upper()} id")
         else:
             t.log("no season 1 episode with an IMDb Stremio id in the fixture series: episode part left out")
 
