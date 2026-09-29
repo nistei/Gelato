@@ -116,6 +116,7 @@ class Stub:
         self.versions = {}  # (imdb, season, episode) -> versions
         self.lookups, self.submissions = [], []  # (path, headers) / (body, headers)
         self.stream_agents = []  # User-Agent of each stream request the stub answered
+        self.other_agents = []  # the same for /other/, an addon that is not AIOStreams
         self.lock = threading.Lock()
         outer = self
 
@@ -158,6 +159,20 @@ class Stub:
                         with outer.lock:
                             outer.stream_agents.append(self.headers.get("User-Agent") or "")
                         return self.reply(200, json.dumps({"streams": outer.streams[path]}).encode())
+                    return self.forward(path + (f"?{url.query}" if url.query else ""))
+                if url.path.startswith("/other/"):
+                    # The same addon under another name: its manifest is not AIOStreams'.
+                    path = url.path[len("/other"):]
+                    if path in outer.streams:
+                        with outer.lock:
+                            outer.other_agents.append(self.headers.get("User-Agent") or "")
+                        return self.reply(200, json.dumps({"streams": outer.streams[path]}).encode())
+                    if path == "/manifest.json":
+                        req = urllib.request.Request(outer.upstream + path, headers={"User-Agent": "jfapi"})
+                        with urllib.request.urlopen(req, timeout=60) as r:
+                            manifest = json.loads(r.read())
+                        manifest["id"], manifest["name"] = "org.jfapi.other", "Other Addon"
+                        return self.reply(200, json.dumps(manifest).encode())
                     return self.forward(path + (f"?{url.query}" if url.query else ""))
                 return self.reply(404, b"", None)
 
@@ -437,6 +452,26 @@ def run(t):
                 t.equal(ids.get(f"{key}_id"), expected, f"the episode's submission: the show's {key.upper()} id")
         else:
             t.log("no season 1 episode with an IMDb Stremio id in the fixture series: episode part left out")
+
+        # ---- A played with RemuxDB's media info: probed once in the background afterwards, which
+        # replaces it with the file's (here the clip's) and sends nothing
+        row_a_id = dashed(row_a)
+        t.check(wait_for(lambda: log_count(t, f"Probing stream for {row_a_id}") >= 1, 90),
+                "A is probed in the background after its playback")
+        a_after = lambda: by_name(t.api.item(movie)).get("remuxdb-A", {})
+        t.check(wait_for(lambda: [(v.get("Codec"), v.get("Width")) for v in streams_of(a_after(), "Video")] == [("h264", 128)], 30),
+                f"A's tracks are the probe's afterwards ({[(v.get('Codec'), v.get('Width')) for v in streams_of(a_after(), 'Video')]})")
+        t.check(log_count(t, f"RemuxDB media info of {row_a_id} differs from its probe") >= 1,
+                "the difference between RemuxDB's tracks and the probe is logged")
+        time.sleep(3)
+        t.equal(log_count(t, f"Probing stream for {row_a_id}"), 1, "A is probed once")
+        t.equal([r for r, _ in stub.submissions if HASH_A in r], [], "a file RemuxDB knew is not submitted after its probe")
+
+        # ---- an addon that is not AIOStreams gets Gelato's own User-Agent for streams
+        t.api.post(cfg_path, {**t.api.get(cfg_path), "Url": f"{stub.base}/other/manifest.json"})
+        t.api.item(movie)
+        t.check(stub.other_agents and all(a.startswith("Gelato/") for a in stub.other_agents),
+                f"another addon is asked for streams as Gelato ({sorted(set(stub.other_agents))})")
 
         # ---- lookups off: a sync asks RemuxDB nothing
         t.api.post(cfg_path, {**t.api.get(cfg_path), "RemuxDbEnabled": False})
