@@ -418,10 +418,11 @@ def run(t):
                     "the episode's stream gets its tracks")
             t.equal(ep.get("Size"), SIZE_EP, "the episode's stream: size")
 
-            # An unknown file of the episode goes out with the episode's own ids, as Remux sends
-            # them; with the series' IMDb id RemuxDB took the submission but never listed it.
+            # An unknown file of the episode goes out with its show's ids: they link it to RemuxDB's
+            # media table, which has shows but no episodes. With the episode's own ids RemuxDB took
+            # the submission but never listed it.
             t.api.post(cfg_path, {**t.api.get(cfg_path), "RemuxDbContribute": True})
-            ep_ids = {k.lower(): v for k, v in (t.api.item(episode["Id"], "ProviderIds").get("ProviderIds") or {}).items()}
+            show_ids = {k.lower(): v for k, v in (t.api.item(episode["SeriesId"], "ProviderIds").get("ProviderIds") or {}).items()}
             ep2 = by_name(t.api.item(episode["Id"])).get("remuxdb-EP2", {})
             playback_info(t, episode["Id"], ep2)
             mine = lambda: [json.loads(r) for r, _ in stub.submissions if HASH_EP2 in r]
@@ -430,11 +431,10 @@ def run(t):
             ids = sub.get("external_ids") or {}
             t.equal((sub.get("kind"), sub.get("season"), sub.get("episode")), ("episode", int(season), int(number)),
                     "the episode's submission: kind, season, episode")
-            t.equal(ids.get("imdb_id"), ep_ids.get("imdb") or series_imdb,
-                    "the episode's submission: the episode's own IMDb id where it has one" + ("" if ep_ids.get("imdb") else " (it has none: the series')"))
+            t.equal(ids.get("imdb_id"), show_ids.get("imdb") or series_imdb, "the episode's submission: the show's IMDb id")
             for key in ("tvdb", "tmdb"):
-                expected = int(ep_ids[key]) if (ep_ids.get(key) or "").isdigit() else None
-                t.equal(ids.get(f"{key}_id"), expected, f"the episode's submission: the episode's {key.upper()} id")
+                expected = int(show_ids[key]) if (show_ids.get(key) or "").isdigit() else None
+                t.equal(ids.get(f"{key}_id"), expected, f"the episode's submission: the show's {key.upper()} id")
         else:
             t.log("no season 1 episode with an IMDb Stremio id in the fixture series: episode part left out")
 
