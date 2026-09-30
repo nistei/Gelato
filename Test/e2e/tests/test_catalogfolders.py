@@ -1,12 +1,11 @@
-DESCRIPTION = "Catalog folders: a movie and a series catalog with a folder of their own move their items there on sync, watch state kept, and back when the folder is cleared (adds two libraries and scans)"
+DESCRIPTION = "Catalog libraries: Gelato adds its folder to a picked library, a movie and a series catalog picking one move their items there on sync, watch state kept, and back when cleared (adds two libraries and scans)"
 DESTRUCTIVE = True  # changes the plugin configuration, adds two libraries, runs the catalog import and a scan
 
 import time
 
 from jfapi.bootstrap import CATALOG_ITEMS, GELATO, MOVIE_PATH, SERIES_ITEMS, SERIES_PATH
 
-MOVIE_LIB, MOVIE_DIR = "Catalog movies jfapi", "/tmp/gelato/catalog-movies"
-SERIES_LIB, SERIES_DIR = "Catalog shows jfapi", "/tmp/gelato/catalog-series"
+MOVIE_LIB, SERIES_LIB = "Catalog movies jfapi", "Catalog shows jfapi"
 
 GELATO_MOVIE = "b.Type like '%Movies.Movie' and b.Path like 'gelato://%' and (b.Tags is null or b.Tags not like '%gelato-stream%')"
 GELATO_SERIES = "b.Type like '%TV.Series' and b.Path like 'gelato://%'"
@@ -73,23 +72,33 @@ def run(t):
             f"where lower(replace(s.Id,'-','')) in ({marks}) and coalesce(d.TopParentId,'')<>coalesce(s.TopParentId,'')",
             tuple(series_ids))[0]
 
+    def library(name):
+        return next((v for v in api.get("/Library/VirtualFolders") if v.get("Name") == name), None)
+
+    def gelato_folder(name):
+        """What the settings page does when a library is picked: Gelato's folder in it."""
+        return api.post(f"/gelato/libraries/{library(name)['ItemId']}/folder")["Path"]
+
     added, watched = [], None
+    MOVIE_DIR = SERIES_DIR = None
     try:
-        # Two libraries on the catalogs' folders. Gelato seeds a catalog's folder when it looks it
-        # up, which it does on every request once the configuration names the folder.
-        configure(MOVIE_DIR, SERIES_DIR)
-        t.sh(f"mkdir -p {MOVIE_DIR} {SERIES_DIR}")
-        have = {p for v in api.get("/Library/VirtualFolders") for p in v.get("Locations", [])}
-        for name, kind, path in ((MOVIE_LIB, "movies", MOVIE_DIR), (SERIES_LIB, "tvshows", SERIES_DIR)):
-            if path not in have:
-                api.post(f"/Library/VirtualFolders?name={name.replace(' ', '%20')}&collectionType={kind}"
-                         f"&paths={path.replace('/', '%2F')}&refreshLibrary=false",
+        # Two empty libraries, as a user creates them, and Gelato's folder in each.
+        for name, kind in ((MOVIE_LIB, "movies"), (SERIES_LIB, "tvshows")):
+            if library(name) is None:
+                api.post(f"/Library/VirtualFolders?name={name.replace(' ', '%20')}&collectionType={kind}&refreshLibrary=false",
                          {"LibraryOptions": {"EnableRealtimeMonitor": False}})
                 added.append(name)
-                t.log("library created:", name, "on", path)
-        api.search("gelato")  # a request, so Gelato looks its folders up and seeds them
-        t.check(t.sh(f"ls {MOVIE_DIR}").strip(), "Gelato seeded the catalog's folder")
-        scan()
+                t.log("library created:", name)
+        MOVIE_DIR, SERIES_DIR = gelato_folder(MOVIE_LIB), gelato_folder(SERIES_LIB)
+        t.log("Gelato's folders:", MOVIE_DIR, SERIES_DIR)
+        t.check(MOVIE_DIR in library(MOVIE_LIB).get("Locations", []), "the folder is in the picked library")
+        t.check("stub.txt" in t.sh(f"ls '{MOVIE_DIR}'"), "Gelato seeded the folder")
+        t.equal(gelato_folder(MOVIE_LIB), MOVIE_DIR, "picking the library again gives the same folder")
+        t.check(MOVIE_DIR != SERIES_DIR, "each library gets a folder of its own")
+        t.equal(MOVIE_DIR.rsplit("/", 1)[-1], "catalog-movies-jfapi", "the folder is named after the library, lowercase without spaces")
+        configure(MOVIE_DIR, SERIES_DIR)
+        time.sleep(5)
+        t.check(api.wait_tasks_idle("RefreshLibrary", 1800), "the scan the folder queued finished")
         cat_movies, cat_series = folder_id(MOVIE_DIR), folder_id(SERIES_DIR)
         t.check(cat_movies and cat_series, "the folder items of both catalog folders exist")
         if not (cat_movies and cat_series):
@@ -147,7 +156,7 @@ def run(t):
             t.check(api.user_data(watched).get("Played"), "a movie moved back is still played")
     finally:
         # Removing a library deletes what is in it: bring anything still there back first.
-        leftovers = [f for f in (folder_id(MOVIE_DIR), folder_id(SERIES_DIR)) if f]
+        leftovers = [f for f in (folder_id(d) for d in (MOVIE_DIR, SERIES_DIR) if d) if f]
         if any(in_folder(GELATO_MOVIE, f) or in_folder(GELATO_SERIES, f) for f in leftovers):
             t.log("items left in the catalog folders, syncing them back before the libraries go")
             configure("", "")
@@ -159,3 +168,6 @@ def run(t):
         for name in added:
             api.call("DELETE", f"/Library/VirtualFolders?name={name.replace(' ', '%20')}&refreshLibrary=false")
             t.log("library removed:", name)
+        for d in (MOVIE_DIR, SERIES_DIR):
+            if d:
+                t.sh(f"rm -rf '{d}'")
