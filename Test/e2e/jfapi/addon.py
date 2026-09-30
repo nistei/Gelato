@@ -138,6 +138,12 @@ def switch(api, gelato_id, url, port, keep=None):
         with open(_saved(port), "w", encoding="utf-8") as h:
             h.write(keep)
     cfg = api.get(f"/Plugins/{gelato_id}/Configuration")
+    # A user override on the addon follows it: test_peruser copies the global URL into the override
+    # it creates, which is the proxy's during a run, and a later run's proxy has another port.
+    old = cfg.get("Url") or ""
+    for user in cfg.get("UserConfigs") or []:
+        if user.get("Url") and (user["Url"] == old or f"//{PROXY_HOST}:" in user["Url"]):
+            user["Url"] = url
     api.post(f"/Plugins/{gelato_id}/Configuration", {**cfg, "Url": url})
     if not keep and os.path.exists(_saved(port)):
         os.remove(_saved(port))
