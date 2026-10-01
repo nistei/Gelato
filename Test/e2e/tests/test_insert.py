@@ -151,11 +151,12 @@ def run(t):
             return
         # Jellyfin restores parked watch state when a title comes back under the same ids (see
         # seriesdelete), so a series that was here before starts where it was left: reset the
-        # episodes used here.
+        # whole series, not only the episodes used here, as the unplayed badge counts all of them
+        # (another test marks a whole series played from its search hit).
         for e in eps[:2]:
             if t.api.user_data(e["Id"])["Played"]:
-                t.log(f"episode {e.get('IndexNumber')} came back played (parked state restored), resetting it")
-            t.api.mark_played(e["Id"], False)
+                t.log(f"episode {e.get('IndexNumber')} came back played (parked state restored), resetting the series")
+        t.api.mark_played(series, False)
         total = t.db.one("select count(*) from BaseItems where Type like '%TV.Episode' and (Tags is null or Tags not like '%gelato-stream%') "
                          "and lower(replace(SeriesId,'-',''))=?", (series,))[0]
         s = t.api.item(series, "RecursiveItemCount")
