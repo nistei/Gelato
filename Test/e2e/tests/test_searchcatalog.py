@@ -58,14 +58,20 @@ def run(t):
                      {"LibraryOptions": {"EnableRealtimeMonitor": False}})
             created = True
         path = api.post(f"/gelato/libraries/{library()['ItemId']}/folder")["Path"]
-        # The library is the series catalog's: that makes its folder one Gelato imports into.
-        cfg["Catalogs"] = [{**c, "Path": path} if c is cat else c for c in old]
-        api.post(f"/Plugins/{GELATO}/Configuration", cfg)
         time.sleep(5)
         t.check(api.wait_tasks_idle("RefreshLibrary", 1800), "the scan the folder queued finished")
-        t.check(folder_id(path), "the catalog library's folder exists")
-        t.wait(12)  # Gelato memoizes its folder lookup for 10 s
+        t.check(folder_id(path), "the library's Gelato folder exists")
         scope = library()["ItemId"]
+
+        # The library has Gelato's folder and no catalog uses it (yet, or any more): it is searched
+        # all the same. The seed file is gone, as after a restart.
+        t.sh(f"rm -f '{path}/stub.txt'")
+        t.check(list(fresh("Series", SERIES_TERMS[:2], scope)), "a search inside a library with Gelato's folder is answered by the addon")
+
+        # The library is the series catalog's: its folder is one Gelato imports into.
+        cfg["Catalogs"] = [{**c, "Path": path} if c is cat else c for c in old]
+        api.post(f"/Plugins/{GELATO}/Configuration", cfg)
+        t.wait(12)  # Gelato memoizes its folder lookup for 10 s
 
         hits = list(fresh("Series", SERIES_TERMS, scope))
         t.check(hits, "a search inside the catalog's library is answered by the addon")
