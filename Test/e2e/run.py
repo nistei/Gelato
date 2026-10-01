@@ -19,6 +19,9 @@ How a run keeps its results comparable:
   --addon refresh records anew).
 - A test that fails runs once more alone at the end, on items no other test touched. Passing then
   makes it "flaky", reported but not failing the run; failing again is a failure. --no-rerun skips it.
+- Catalogs are limited to a handful of items for the run and get their configured limits back after
+  it (--full-catalogs keeps them): two tests run the import as configured, and on a copy of a real
+  instance the refresh of hundreds of new items keeps every later test waiting.
 - A check for a documented open bug ends as KNOWN; a missing prerequisite (artwork, a plugin) skips.
 
 Environment variables stand in for the options: JF_CONTAINER, JF_URL, JF_ADMINUSER, JF_ADMINPASSWORD,
@@ -121,6 +124,7 @@ def main():
     p.add_argument("--shard", metavar="I/N", help="run only shard I of N (1-based): the selected tests split by their typical duration "
                    "(jfapi/weights.json), each shard on its own instance, see tools/parallel.py")
     p.add_argument("--no-rerun", action="store_true", help="do not run failed tests again alone")
+    p.add_argument("--full-catalogs", action="store_true", help="import the catalogs with their configured limits instead of a handful of items each")
     args = p.parse_args()
     args.url = args.url or container_url(args.container)
 
@@ -194,9 +198,14 @@ def main():
             print(f"  addon: the container cannot reach the proxy on port {recorder.port} ({reach or 'no answer'}), asking the addon directly")
             recorder.close()
             recorder = None
+    if args.full_catalogs:
+        bootstrap.restore_catalogs(api, port)
+    else:
+        bootstrap.cap_catalogs(api, port, lambda m: print("  " + m))
     try:
         return run_selected(args, api, db, fixtures, selected, seed)
     finally:
+        bootstrap.restore_catalogs(api, port)
         if recorder:
             addon.switch(api, bootstrap.GELATO, cfg["Url"], port)
             s = recorder.stats

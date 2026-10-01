@@ -6,12 +6,14 @@ Gelato itself is not installed: it must be in the container's plugin folder alre
 from a build. The Webhook plugin is installed here, so the event test runs on a fresh instance too.
 """
 import json
+import os
 import subprocess
 import time
 import urllib.request
 
 from .api import Api
 
+CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".cache")
 GELATO = "94ea4e14-8163-4989-96fe-0a2094bc2d6a"
 WEBHOOK_GUID = "71552a5a-5c5c-4350-a2ae-ebe451a30173"
 MOVIE_PATH = "/tmp/gelato/movies"
@@ -172,6 +174,53 @@ def setup(api, db, addon_url, log):
                      "(select 1 from BaseItemProviders p where p.ItemId=b.Id and lower(p.ProviderId)='stremio')")[0]
     log(f"catalog import {status} {msg}: {movies} movies, {series} series, {boxsets} collection(s) in the library")
     settle(db, log)
+
+
+RUN_ITEMS = 5  # per catalog during a run, see cap_catalogs
+
+
+def _caps_file(port):
+    return os.path.join(CACHE, f"catalogs-{port}.json")
+
+
+def cap_catalogs(api, port, log):
+    """Limits every catalog to a handful of items for the run and remembers the configured limits.
+
+    test_tasks and test_purgeall run the catalog import as the instance has it configured. On a copy
+    of a real instance that is hundreds of items per catalog, and the metadata refresh of what they
+    bring in keeps the server busy for most of the run: every later test waits for it. The limits a
+    run died with are put back first."""
+    restore_catalogs(api, port)
+    cfg = api.get(f"/Plugins/{GELATO}/Configuration")
+    saved = {"CatalogMaxItems": cfg.get("CatalogMaxItems"),
+             "MaxItems": {f"{c['Type']}.{c['Id']}": c.get("MaxItems") for c in cfg.get("Catalogs") or []}}
+    for c in cfg.get("Catalogs") or []:
+        limit = SERIES_ITEMS if c.get("Type") == "series" else RUN_ITEMS
+        c["MaxItems"] = min(c.get("MaxItems") or limit, limit)
+    cfg["CatalogMaxItems"] = min(cfg.get("CatalogMaxItems") or RUN_ITEMS, RUN_ITEMS)
+    os.makedirs(CACHE, exist_ok=True)
+    with open(_caps_file(port), "w", encoding="utf-8") as h:
+        json.dump(saved, h)
+    api.post(f"/Plugins/{GELATO}/Configuration", cfg)
+    log(f"catalogs limited to {RUN_ITEMS} items ({SERIES_ITEMS} for series catalogs) for the run")
+
+
+def restore_catalogs(api, port):
+    """Puts the configured catalog limits back, if a run limited them."""
+    path = _caps_file(port)
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as h:
+        saved = json.load(h)
+    cfg = api.get(f"/Plugins/{GELATO}/Configuration")
+    for c in cfg.get("Catalogs") or []:
+        key = f"{c['Type']}.{c['Id']}"
+        if key in saved["MaxItems"]:
+            c["MaxItems"] = saved["MaxItems"][key]
+    if saved.get("CatalogMaxItems") is not None:
+        cfg["CatalogMaxItems"] = saved["CatalogMaxItems"]
+    api.post(f"/Plugins/{GELATO}/Configuration", cfg)
+    os.remove(path)
 
 
 def settle(db, log, timeout=900):
