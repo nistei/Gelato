@@ -158,8 +158,8 @@ def load_tests(tests_dir):
     return {n: importlib.import_module(f"tests.test_{n}") for n in names}
 
 
-ORDER = ["sync", "rowpage", "images", "deadimage", "people", "seasons", "seasonposters", "counts", "lists", "insert", "useractions", "tasks", "catalogs", "searchfail", "searchtypes", "searchdupes", "localfind", "searchpage", "searchscope", "metaid", "canonicalid", "searchreads", "unreleased", "releasedates", "nativedates", "play", "streamurl", "escapedurl", "nextup", "users",
-         "concurrent", "searchrace", "seedrace", "playlist", "rowops", "apikeydownload", "apikeyinsert", "splitmerge", "webhook", "race", "seriesdelete", "subrow", "upgrade", "purgelog", "scan", "tmpwipe", "localtreescan", "playsubs", "subs", "seriestrees", "addonid", "lockmeta", "localtreetag", "localtreeclean", "embeddedtitles", "trickplay", "chapters", "remuxdb", "peruser", "taskcontext", "purgeall"]
+ORDER = ["sync", "rowpage", "images", "deadimage", "people", "seasons", "seasonposters", "counts", "lists", "insert", "useractions", "unopenedgroups", "tasks", "catalogs", "searchfail", "searchtypes", "searchdupes", "localfind", "searchpage", "searchscope", "metaid", "canonicalid", "searchreads", "unreleased", "releasedates", "nativedates", "play", "streamurl", "firstrowid", "escapedurl", "nextup", "users",
+         "concurrent", "searchrace", "seedrace", "playlist", "rowops", "apikeydownload", "downloadnosync", "apikeyinsert", "splitmerge", "webhook", "race", "seriesdelete", "subrow", "upgrade", "purgelog", "scan", "tmpwipe", "localtreescan", "playsubs", "subs", "seriestrees", "addonid", "lockmeta", "localtreetag", "localtreeclean", "embeddedtitles", "trickplay", "chapters", "remuxdb", "peruser", "taskcontext", "purgeall"]
 
 
 def run_test(name, module, ctx):
