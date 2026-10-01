@@ -91,6 +91,18 @@ def run(t):
         t.equal(probes_of(t, d), 1, "and playback probes as before")
         t.api.post(cfg_path, {**t.api.get(cfg_path), "PreProbe": True})
 
+        # ---- flicking through the versions: the page and the versions passed are not probed, the
+        # one stopped on is
+        stub.streams[f"/stream/movie/{imdb}.json"] = [stream(k, stub.base) for k in "GHI"]
+        t.api.post(cfg_path, {**t.api.get(cfg_path), "PreProbe": True})
+        sources = by_name(t.api.item(movie))
+        g, h, i = (sources.get(f"pre-{k}", {}) for k in "GHI")
+        t.api.item(h["ETag"])
+        t.api.item(i["ETag"])
+        t.check(wait_for(lambda: probes_of(t, i) >= 1, 60), "the version stopped on is probed")
+        time.sleep(4)
+        t.equal((probes_of(t, g), probes_of(t, h)), (0, 0), "the page and the version passed on the way are not probed")
+
         # ---- the next episode, while an episode nears its end
         if pair:
             first, second = pair
