@@ -46,8 +46,10 @@ def run(t):
         video.update({"codec": "hevc", "bit_rate": 7_000_000})
         stub.versions[(series_imdb, int(season), int(number))] = [known]
 
+        # Pre-probing off: opening the episode would do the lookup before the playback this tests
         t.api.post(cfg_path, {**original, "Url": f"{stub.base}/addon/manifest.json",
-                              "RemuxDbUrl": f"{stub.base}/remuxdb", "RemuxDbEnabled": True, "RemuxDbContribute": False})
+                              "RemuxDbUrl": f"{stub.base}/remuxdb", "RemuxDbEnabled": True, "RemuxDbContribute": False,
+                              **({"PreProbe": False} if "PreProbe" in original else {})})
 
         row = by_name(t.api.item(episode["Id"])).get("intro-S", {})
         t.require(row, "the episode lists the stub's stream")
@@ -82,7 +84,7 @@ def run(t):
             t.equal(lookups(), done, "a row with segments is not looked up again")
     finally:
         t.api.post(cfg_path, {**t.api.get(cfg_path), **{k: original.get(k) for k in
-                   ("Url", "RemuxDbUrl", "RemuxDbEnabled", "RemuxDbContribute")}})
+                   ("Url", "RemuxDbUrl", "RemuxDbEnabled", "RemuxDbContribute", "PreProbe")}})
         t.api.call("GET", f"/Items/{episode['Id']}?userId={t.api.user}", timeout=90)
         stub.close()
         left = t.db.one("select count(*) from BaseItems where Path like ?", (f"%host.docker.internal:{stub.port}%",))[0]
