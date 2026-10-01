@@ -20,6 +20,7 @@ def run(t):
     cfg = api.get(f"/Plugins/{GELATO}/Configuration")
     base = (cfg.get("BasePath") or api.get("/gelato/libraries")["DefaultBasePath"]).rstrip("/")
     occupied = f"{base}/real-media-jfapi"
+    stray = f"{base}/jfapi-stray-mount"
     created = None
     try:
         # A movies library on a folder with media in it, and a folder of the library's name under
@@ -30,6 +31,26 @@ def run(t):
                      f"&paths={REAL.replace('/', '%2F')}&refreshLibrary=false",
                      {"LibraryOptions": {"EnableRealtimeMonitor": False}})
         t.equal(gelato_path(), None, "the library's real media folder is not taken for Gelato's")
+
+        # An empty folder under the base path that is not named after the library (a mount point
+        # that is not mounted, say) is not Gelato's either.
+        t.sh(f"mkdir -p '{stray}'")
+        api.call("POST", "/Library/VirtualFolders/Paths?refreshLibrary=false", {"Name": LIB, "Path": stray})
+        t.check(stray in library().get("Locations", []), "the library has an empty folder under the base path")
+        t.equal(gelato_path(), None, "an empty folder of another name under the base path is not taken for Gelato's")
+
+        # The base path as typed: a relative one is refused, one with detours is saved resolved.
+        lib_id = library()["ItemId"]
+        t.equal(api.call("POST", f"/gelato/libraries/{lib_id}/folder?basePath=gelato-relative")[0], 400,
+                "a relative base path is refused")
+        st, d = api.call("POST", f"/gelato/libraries/{lib_id}/folder?basePath=%2Ftmp%2Fjfapi-real%2F..%2Fjfapi-base")
+        detour = d.get("Path") if isinstance(d, dict) else None
+        t.equal(detour, "/tmp/jfapi-base/real-media-jfapi", "a base path with detours gives a resolved folder")
+        for location in library().get("Locations", []):
+            if "jfapi-base" in location:
+                api.call("DELETE", f"/Library/VirtualFolders/Paths?name={LIB.replace(' ', '%20')}"
+                                   f"&path={location.replace('/', '%2F')}&refreshLibrary=false")
+        t.sh("rm -rf /tmp/jfapi-base")
 
         created = api.post(f"/gelato/libraries/{library()['ItemId']}/folder")["Path"]
         t.log("Gelato's folder:", created)
@@ -49,4 +70,4 @@ def run(t):
     finally:
         if library() is not None:
             api.call("DELETE", f"/Library/VirtualFolders?name={LIB.replace(' ', '%20')}&refreshLibrary=false")
-        t.sh(f"rm -rf /tmp/jfapi-real '{occupied}'" + (f" '{created}'" if created else ""))
+        t.sh(f"rm -rf /tmp/jfapi-real /tmp/jfapi-base '{occupied}' '{stray}'" + (f" '{created}'" if created else ""))

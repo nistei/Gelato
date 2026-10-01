@@ -3,6 +3,7 @@ DESTRUCTIVE = True  # changes the plugin configuration, adds two libraries, runs
 
 import time
 
+from jfapi.api import search_result_id
 from jfapi.bootstrap import CATALOG_ITEMS, GELATO, MOVIE_PATH, SERIES_ITEMS, SERIES_PATH
 
 MOVIE_LIB, SERIES_LIB = "Catalog movies jfapi", "Catalog shows jfapi"
@@ -79,7 +80,14 @@ def run(t):
         """What the settings page does when a library is picked: Gelato's folder in it."""
         return api.post(f"/gelato/libraries/{library(name)['ItemId']}/folder")["Path"]
 
-    added, watched = [], None
+    def rows_of(movie):
+        return [r[0] for r in db.query(
+            "select lower(replace(ParentId,'-','')) from BaseItems where lower(replace(PrimaryVersionId,'-',''))=?", (movie,))]
+
+    def parent_of(item):
+        return db.one("select lower(replace(ParentId,'-','')) from BaseItems where lower(replace(Id,'-',''))=?", (item,))[0]
+
+    added, watched, kept, episode, policy = [], None, None, None, None
     MOVIE_DIR = SERIES_DIR = None
     try:
         # Two empty libraries, as a user creates them, and Gelato's folder in each.
@@ -133,8 +141,8 @@ def run(t):
         probe = sorted(moved_movies)[0]
         n = len(api.sources(probe))  # opening the movie syncs its streams
         t.check(n >= 1, f"a moved movie still plays ({n} sources)")
-        rows = db.query("select lower(replace(ParentId,'-','')) from BaseItems where lower(replace(PrimaryVersionId,'-',''))=?", (probe,))
-        t.check(all(r[0] == cat_movies for r in rows), f"its {len(rows)} stream rows are in the catalog's folder")
+        rows = rows_of(probe)
+        t.check(rows and all(r == cat_movies for r in rows), f"its {len(rows)} stream rows are in the catalog's folder")
         t.equal(len(listed(MOVIE_DIR, "Movie")), len(lib_before), "its stream rows are not listed as movies of their own")
 
         # 2. A scan keeps them, a second sync moves nothing.
@@ -143,9 +151,66 @@ def run(t):
         sync("folders unchanged")
         t.check(in_folder(GELATO_MOVIE, cat_movies) == moved_movies, "a second sync leaves them where they are")
 
-        # 3. The folders are cleared: the items go back to the movie and series folders.
+        # 3. A catalog folder that cannot be found (not in a library yet, or its disk is gone) must
+        # not send the catalog's items back to the movie folder.
+        t.sh("mkdir -p /tmp/gelato/in-no-library")
+        configure("/tmp/gelato/in-no-library", SERIES_DIR)
+        sync("movie folder in no library")
+        t.check(in_folder(GELATO_MOVIE, cat_movies) == moved_movies, "a folder in no library leaves the movies where they are")
+        configure(MOVIE_DIR, SERIES_DIR)
+
+        # 4. A user who cannot open the catalog's library opens one of its movies from search: the
+        # movie is not pulled out of the library.
+        u2 = t.user2
+        user = api.get(f"/Users/{u2.user}")
+        policy = user["Policy"]
+        hidden = library(MOVIE_LIB)["ItemId"]
+        api.post(f"/Users/{u2.user}/Policy", {**policy, "EnableAllFolders": False, "EnabledFolders": [
+            v["ItemId"] for v in api.get("/Library/VirtualFolders") if v["ItemId"] != hidden]})
+        taken = sorted(moved_movies)[1 % len(moved_movies)]
+        u2.call("GET", f"/Items/{search_result_id(db.stremio_id(taken))}?userId={u2.user}")
+        api.settle_insert()
+        t.equal(parent_of(taken), cat_movies, "a user without access to the library does not pull a movie out of it")
+        api.post(f"/Users/{u2.user}/Policy", policy)
+        policy = None
+
+        # 5. The catalogs are gone from the configuration (set back, or dropped by the addon) while
+        # their items are still in the folders. A series tree sync must not half-move the series,
+        # and a movie's streams still land next to it.
+        cfg["Catalogs"] = []
+        api.post(f"/Plugins/{GELATO}/Configuration", cfg)
+        for sid in moved_series:
+            dto = api.get(f"/Items/{sid}?userId={api.user}")
+            if dto.get("Status") != "Continuing":  # the tree sync takes continuing series
+                api.post(f"/Items/{sid}", {**dto, "Status": "Continuing"})
+        time.sleep(5)
+        api.wait_tasks_idle("RefreshLibrary", 1800)
+        status, msg = api.run_task("SyncSeriesTrees", timeout=1800)
+        t.equal(status, "Completed", f"series tree sync {msg}")
+        t.check(in_folder(GELATO_SERIES, cat_series) == moved_series, "the tree sync leaves a series in the folder it is in")
+        t.equal(tree_mismatches(moved_series), 0, "and its seasons and episodes with it")
+        t.equal(sorted(set(duplicates()) - dupes_before), [], "and creates it nowhere else")
+        late = sorted(moved_movies)[-1]
+        t.check(len(api.sources(late)) >= 1, "a movie left in a former catalog folder still plays")
+        rows = rows_of(late)
+        t.check(rows and all(r == cat_movies for r in rows), f"its {len(rows)} stream rows are next to it")
+
+        # 6. The folders are cleared: the items go back to the movie and series folders, with their
+        # stream rows and their watch state.
+        kept = sorted(moved_movies)[len(moved_movies) // 2]
+        api.mark_played(kept)
+        row = db.one("select lower(replace(e.Id,'-','')) from BaseItems e join AncestorIds a on a.ItemId=e.Id "
+                     "where e.Type like '%TV.Episode' and (e.Tags is null or e.Tags not like '%gelato-stream%') "
+                     "and lower(replace(a.ParentItemId,'-',''))=? limit 1", (sorted(moved_series)[0],))
+        episode = row[0] if row else None
+        if episode:
+            api.mark_played(episode)
         configure("", "")
         sync("folders cleared")
+        t.check(api.user_data(kept).get("Played"), "a movie played in the catalog's library is still played after moving back")
+        t.check(episode and api.user_data(episode).get("Played"), "and so is an episode")
+        rows = rows_of(probe)
+        t.check(rows and all(r == def_movies for r in rows), f"a movie's {len(rows)} stream rows moved back with it")
         t.equal(in_folder(GELATO_MOVIE, cat_movies), set(), "no movie is left in the cleared folder")
         t.equal(in_folder(GELATO_SERIES, cat_series), set(), "no series is left in the cleared folder")
         t.check(moved_movies <= in_folder(GELATO_MOVIE, def_movies), "the movies are back in the movie folder")
@@ -163,8 +228,11 @@ def run(t):
             api.run_task("GelatoCatalogItemsSync", timeout=1800)
         cfg.update(old)
         api.post(f"/Plugins/{GELATO}/Configuration", cfg)
-        if watched:
-            api.mark_played(watched, False)
+        if policy:
+            api.post(f"/Users/{t.user2.user}/Policy", policy)
+        for item in (watched, kept, episode):
+            if item:
+                api.mark_played(item, False)
         for name in added:
             api.call("DELETE", f"/Library/VirtualFolders?name={name.replace(' ', '%20')}&refreshLibrary=false")
             t.log("library removed:", name)
