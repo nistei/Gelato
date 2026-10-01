@@ -1,4 +1,4 @@
-DESCRIPTION = "RemuxDB: a stream it knows gets its tracks, runtime, size and chapters when synced and plays without a probe; a probed file it does not know is submitted anonymously, only with a torrent, only when it runs as long as the title and only when contributing is on; episodes are looked up by season and episode"
+DESCRIPTION = "RemuxDB: a stream it knows gets its tracks, runtime, size and chapters when synced and plays without a probe, unless it lacks the video bitrate or H.264 reference frames playback decides on; a probed file it does not know is submitted anonymously, only with a torrent, only when it runs as long as the title and only when contributing is on; episodes are looked up by season and episode"
 DESTRUCTIVE = True  # points Gelato's addon and RemuxDB at a stub on the host for the run of the test, then restores and resyncs
 
 import json
@@ -70,11 +70,11 @@ def version_a(seconds):
              "is_default": True, "is_forced": False, "is_external": False, "is_hearing_impaired": False,
              "is_anamorphic": False, "hdr10_plus_present": False},
             {"kind": "audio", "idx": 1, "codec": "eac3", "channels": 6, "channel_layout": "5.1(side)",
-             "sample_rate": 48000, "language": "ger", "is_default": True, "is_forced": False, "is_external": False,
+             "sample_rate": 48000, "bit_rate": 768_000, "language": "ger", "is_default": True, "is_forced": False, "is_external": False,
              "is_hearing_impaired": False, "is_anamorphic": False, "hdr10_plus_present": False},
             {"kind": "audio", "idx": 3, "codec": "truehd", "channels": 8, "channel_layout": "7.1",
-             "sample_rate": 48000, "language": "eng", "is_default": False, "is_forced": False, "is_external": False,
-             "is_hearing_impaired": False, "is_anamorphic": False, "hdr10_plus_present": False},
+             "sample_rate": 48000, "bit_rate": 4_000_000, "language": "eng", "is_default": False, "is_forced": False,
+             "is_external": False, "is_hearing_impaired": False, "is_anamorphic": False, "hdr10_plus_present": False},
             {"kind": "subtitle", "idx": 4, "codec": "hdmv_pgs_subtitle", "language": "eng", "is_default": False,
              "is_forced": True, "is_external": False, "is_hearing_impaired": False, "is_anamorphic": False,
              "hdr10_plus_present": False},
@@ -361,6 +361,8 @@ def run(t):
         t.equal(a.get("Container"), "mkv", "A: container")
         t.equal(a.get("Size"), SIZE_A, "A: size")
         t.equal(a.get("Bitrate"), 38_000_000, "A: bitrate")
+        t.equal([v.get("BitRate") for v in video], [38_000_000 - 768_000 - 4_000_000],
+                "A: a video track without a bitrate gets the file's less the audio tracks'")
         row_a = a.get("ETag") or ""
         chapters = t.api.item(row_a, "Chapters").get("Chapters") if row_a else None
         t.equal([ch.get("Name") for ch in chapters or []], ["Opening", "Middle", "Chapter 3"], "A: chapters, a time as title renamed")
@@ -377,6 +379,15 @@ def run(t):
         played = next((s for s in pi.get("MediaSources", []) if s.get("Id") == a.get("Id")), {})
         t.equal(probes_of(t, a) - before, 0, "A plays without a probe")
         t.equal([v.get("Codec") for v in streams_of(played, "Video")], ["hevc"], "A's PlaybackInfo has RemuxDB's tracks")
+
+        # B has RemuxDB's tracks too, but H.264 without reference frames and no bitrate to derive
+        # (its audio track's is unknown): a transcode would be encoded at the client's maximum
+        before = probes_of(t, b)
+        pi = playback_info(t, movie, b)
+        played = next((s for s in pi.get("MediaSources", []) if s.get("Id") == b.get("Id")), {})
+        t.equal(probes_of(t, b) - before, 1, "B is probed before it plays: RemuxDB's tracks lack bitrate and reference frames")
+        t.equal([(v.get("Codec"), v.get("Width")) for v in streams_of(played, "Video")], [("h264", 128)],
+                "B's PlaybackInfo has the probe's tracks")
 
         for key, width in (("C", 128), ("D", 128), ("T", 320)):
             s = sources.get(f"remuxdb-{key}", {})
