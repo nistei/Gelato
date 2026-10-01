@@ -58,6 +58,11 @@ def run(t):
     t.check(all(v[1] == movie for v in rows.values()), "every row is owned by the movie")
     folders = t.db.query("select distinct (select Path from BaseItems f where f.Id=b.ParentId) from BaseItems b where lower(replace(b.PrimaryVersionId,'-',''))=?", (movie,))
     t.log("row folders:", [f[0] for f in folders])
-    t.equal(len(folders), 1, "the rows sit in one folder (the last syncing user's)")
-    both = {path, cfg.get("MoviePath")}
-    t.check(folders and folders[0][0] in both, f"which is one of the two users' folders (the last syncing user's): {folders[0][0] if folders else None}")
+    # The rows are versions of the movie, and Jellyfin only hides a version that is in the library
+    # of its primary: in the folder of whoever synced last they were listed and counted as movies.
+    own = t.db.one("select (select Path from BaseItems f where f.Id=b.ParentId) from BaseItems b where lower(replace(b.Id,'-',''))=?", (movie,))[0]
+    t.equal([f[0] for f in folders], [own], "the rows sit in the movie's folder, whoever synced them")
+    counted = u1.get(f"/Items/Counts?userId={u1.user}").get("MovieCount")
+    movies = t.db.one("select count(*) from BaseItems b where b.Type like '%Movies.Movie' and (b.Tags is null or b.Tags not like '%gelato-stream%') "
+                      "and b.TopParentId is not null")[0]
+    t.equal(counted, movies, "the library's movie count does not include the rows")
