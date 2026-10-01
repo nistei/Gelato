@@ -87,6 +87,13 @@ def run(t):
     def parent_of(item):
         return db.one("select lower(replace(ParentId,'-','')) from BaseItems where lower(replace(Id,'-',''))=?", (item,))[0]
 
+    def open_from_search(user, movie):
+        """Opens the title under the id a search result of the addon carries: what a client holds
+        that found the title before the library had it. The search makes Gelato know the id."""
+        stremio = db.stremio_id(movie)
+        user.search(stremio)
+        return user.call("GET", f"/Items/{search_result_id(stremio)}?userId={user.user}")[0]
+
     added, watched, kept, episode, policy = [], None, None, None, None
     MOVIE_DIR = SERIES_DIR = None
     try:
@@ -168,7 +175,7 @@ def run(t):
         api.post(f"/Users/{u2.user}/Policy", {**policy, "EnableAllFolders": False, "EnabledFolders": [
             v["ItemId"] for v in api.get("/Library/VirtualFolders") if v["ItemId"] != hidden]})
         taken = sorted(moved_movies)[1 % len(moved_movies)]
-        u2.call("GET", f"/Items/{search_result_id(db.stremio_id(taken))}?userId={u2.user}")
+        t.log("opened by the user:", open_from_search(u2, taken))
         api.settle_insert()
         t.equal(parent_of(taken), cat_movies, "a user without access to the library does not pull a movie out of it")
         api.post(f"/Users/{u2.user}/Policy", policy)
