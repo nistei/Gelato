@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -44,13 +45,25 @@ class AddonRecorder:
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
-                status, ctype, body = outer.answer(self.path, self.headers.get("User-Agent"))
-                self.send_response(status)
-                if ctype:
-                    self.send_header("Content-Type", ctype)
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                t0, status, size = time.time(), None, 0
+                try:
+                    status, ctype, body = outer.answer(self.path, self.headers.get("User-Agent"))
+                    size = len(body)
+                    self.send_response(status)
+                    if ctype:
+                        self.send_header("Content-Type", ctype)
+                    self.send_header("Content-Length", str(size))
+                    # This server closes the connection after every answer without saying so.
+                    # Gelato's pooled client then sent its next request down the closed one and
+                    # got "The response ended prematurely": a dozen parallel searches lost about
+                    # one in ten that way, and a single-catalog search answers that with HTTP 500.
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    self.wfile.write(body)
+                    outer.note(self.path, status, size, t0)
+                except Exception as e:
+                    outer.note(self.path, f"{status} then {type(e).__name__}: {e}", size, t0)
+                    raise
 
             def log_message(self, *a):
                 pass
@@ -58,8 +71,18 @@ class AddonRecorder:
         # Port 0: two runs against two instances each get their own proxy.
         self.server = ThreadingHTTPServer(("0.0.0.0", 0), Handler)
         self.port = self.server.server_address[1]
+        self.log_file, self._log_lock = os.path.join(CACHE, f"addon-proxy-{self.port}.log"), threading.Lock()
         self.url = f"http://{PROXY_HOST}:{self.port}/manifest.json"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def note(self, path, status, size, t0):
+        """One line per request in `.cache/addon-proxy-<port>.log`: when Gelato reports an addon
+        error, this says whether the request arrived here and what it was answered with."""
+        line = (f"{time.strftime('%H:%M:%S', time.gmtime(t0))}.{int(t0 % 1 * 1000):03d} {status} {size}b "
+                f"{int((time.time() - t0) * 1000)}ms {path[:120]}\n")
+        with self._log_lock:
+            with open(self.log_file, "a", encoding="utf-8") as h:
+                h.write(line)
 
     def _fetch(self, path, agent):
         req = urllib.request.Request(self.upstream + path, headers={"User-Agent": agent or "jfapi"})
