@@ -48,7 +48,7 @@ def run(t):
         # 1. The clean-up has nothing of Gelato's to remove here, and must leave the library alone.
         status, msg = t.api.run_task(TASK, timeout=1800)
         t.equal(status, "Completed", f"sync series trees {msg}")
-        t.wait(5)
+        t.settle()
         t.equal(local_rows(t), scanned, "the task leaves the local series as the scan left it")
 
         # 2. The clean-up still does its work: extend the tree, turn the option off again, and the
@@ -56,7 +56,7 @@ def run(t):
         t.api.post(f"/Plugins/{GELATO}/Configuration", {**cfg, "ExtendLocalSeriesTrees": True})
         status, msg = t.api.run_task(TASK, timeout=1800)
         t.equal(status, "Completed", f"sync series trees with the option on {msg}")
-        t.wait(5)
+        t.settle()
         extended = episode_tree(t, series_id)
         t.log(f"extended: seasons {season_numbers(t, series_id)}, {len(extended)} episodes")
         t.check(len(extended) > len(tree), f"the task extends the local series ({len(extended)} episodes)")
@@ -79,7 +79,7 @@ def run(t):
         t.api.post(f"/Plugins/{GELATO}/Configuration", {**cfg, "ExtendLocalSeriesTrees": False})
         status, msg = t.api.run_task(TASK, timeout=1800)
         t.equal(status, "Completed", f"sync series trees with the option off again {msg}")
-        t.wait(5)
+        t.settle()
         t.log(f"cleaned: seasons {season_numbers(t, series_id)}, episodes {sorted(episode_tree(t, series_id))}")
         t.equal(sorted(episode_tree(t, series_id)), sorted(tree), "the clean-up takes the added episodes back")
         t.equal(local_rows(t), scanned, "the clean-up leaves the local episodes and their season")
@@ -89,14 +89,14 @@ def run(t):
         t.api.post(f"/Plugins/{GELATO}/Configuration", {**cfg, "ExtendLocalSeriesTrees": False, "EnableMixed": True})
         local_first = episode_tree(t, series_id)[(1, 1)]
         sources = len(t.api.sources(local_first))
-        t.wait(3)
+        t.settle()
         rows_before = stream_rows(t, local_first)
         t.log(f"mixed mode: {sources} sources, {rows_before} stream rows on the local episode")
         if rows_before == 0:
             t.log("no streams synced for the local episode, so the clean-up has none to spare here")
         status, msg = t.api.run_task(TASK, timeout=1800)
         t.equal(status, "Completed", f"sync series trees in mixed mode {msg}")
-        t.wait(5)
+        t.settle()
         # From the database: asking the API for the sources again would sync them anew and hide a
         # deletion.
         t.equal(stream_rows(t, local_first), rows_before, "the local episode keeps its stream rows")
@@ -108,14 +108,14 @@ def run(t):
         first = episode_tree(t, series_id)[(1, 1)]
         dto = t.api.item(first, "ProviderIds")
         t.api.post(f"/Items/{first}", {**dto, "ProviderIds": {**(dto.get("ProviderIds") or {}), "Stremio": STREMIO_ID}})
-        t.wait(2)
+        t.settle()
         stamped = t.db.one("select exists(select 1 from BaseItemProviders p where p.ItemId=b.Id and lower(p.ProviderId)='stremio') "
                            "from BaseItems b where lower(replace(Id,'-',''))=?", (first,))[0]
         if not stamped:
             t.skip("the local episode did not take a Stremio id, so the clean-up has nothing to spare")
         status, msg = t.api.run_task(TASK, timeout=1800)
         t.equal(status, "Completed", f"sync series trees after the id was set {msg}")
-        t.wait(5)
+        t.settle()
         after = episode_tree(t, series_id)
         t.log(f"after the clean-up: seasons {season_numbers(t, series_id)}, episodes {sorted(after)}")
         t.equal(t.api.call("GET", f"/Items/{first}?userId={t.api.user}")[0], 200,

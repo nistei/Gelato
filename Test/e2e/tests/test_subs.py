@@ -88,7 +88,10 @@ def run(t):
     t.check(linked, "subtitles were saved for linked stream rows, so the second runs checked the skip on them")
     # rows belong to the user whose visit synced them, so look for one the admin's PlaybackInfo lists
     for row, owner in linked:
-        pi = t.api.post(f"/Items/{owner}/PlaybackInfo?userId={t.api.user}", {"UserId": t.api.user, "MediaSourceId": row})
+        st, pi = t.api.call("POST", f"/Items/{owner}/PlaybackInfo?userId={t.api.user}", {"UserId": t.api.user, "MediaSourceId": row}, timeout=300)
+        t.check(st == 200, f"PlaybackInfo answers ({st})")
+        if st != 200:
+            return
         src = next((s for s in pi.get("MediaSources", []) if norm(s["Id"]) == row), None)
         if src is None:
             continue

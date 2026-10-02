@@ -51,6 +51,10 @@ for line in sys.stdin:
             cons[n] = connect()
             cons[n].execute("BEGIN")
             out = {"con": n}
+        elif r["op"] == "stat":
+            import os
+            out = {"stat": [[f, os.stat("/config/data/" + f).st_size, os.stat("/config/data/" + f).st_mtime_ns]
+                            for f in ("jellyfin.db", "jellyfin.db-wal", "jellyfin.db-shm") if os.path.exists("/config/data/" + f)]}
         elif r["op"] == "close":
             c = cons.pop(r["con"], None)
             if c is not None:
@@ -109,6 +113,56 @@ class Sidecar:
         subprocess.run(["docker", "rm", "-f", self.name], capture_output=True)
 
 
+class Shell:
+    """One long-lived `sh` inside the instance container. `docker exec` per command costs ~160 ms on
+    Windows; a command through this shell costs milliseconds. Each command runs in its own `sh -c`
+    (base64 over the pipe, so quoting and heredocs behave as before) with stdin closed."""
+
+    END = "__JFAPI_END__"
+
+    def __init__(self, container):
+        self.container = container
+        self.lock = threading.Lock()
+        self.proc = None
+        atexit.register(self.close)
+
+    def _start(self):
+        self.proc = subprocess.Popen(["docker", "exec", "-i", self.container, "sh"], stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+    def run(self, cmd):
+        enc = base64.b64encode(cmd.encode("utf-8")).decode()
+        line = f"echo {enc} | base64 -d > /tmp/.jfapi_cmd; sh /tmp/.jfapi_cmd < /dev/null; echo; echo {self.END}\n"
+        with self.lock:
+            for attempt in range(2):
+                if self.proc is None or self.proc.poll() is not None:
+                    self._start()
+                try:
+                    self.proc.stdin.write(line.encode())
+                    self.proc.stdin.flush()
+                    out = bytearray()
+                    while True:
+                        chunk = self.proc.stdout.readline()
+                        if not chunk:
+                            raise BrokenPipeError("shell closed")
+                        if chunk.strip() == self.END.encode():
+                            break
+                        out += chunk
+                    text = out.decode("utf-8", errors="replace")
+                    return text[:-1] if text.endswith("\n") else text  # the marker's own blank line
+                except (BrokenPipeError, OSError):
+                    self.proc = None
+                    if attempt:
+                        raise
+
+    def close(self):
+        try:
+            self.proc.stdin.close()
+            self.proc.wait(timeout=3)
+        except Exception:
+            pass
+
+
 class SidecarConnection:
     """What `connect()` hands out with a sidecar: a read transaction, one consistent state."""
 
@@ -136,6 +190,7 @@ class Db:
         self.seed = None
         self.rng = random.Random()
         self.sidecar = None
+        self.shell = Shell(container) if container else None
         if container:
             try:
                 self.sidecar = Sidecar(container)
@@ -214,8 +269,16 @@ class Db:
         """A shell command inside the container. Its output is decoded as UTF-8: with the default
         (the Windows code page) one file name with a non-ASCII character fails the reader thread and
         the output comes back as None."""
+        if self.shell is not None:
+            return self.shell.run(cmd)
         return subprocess.run(["docker", "exec", self.container, "sh", "-c", cmd], capture_output=True, text=True,
                               encoding="utf-8", errors="replace").stdout
+
+    def db_stat(self):
+        """Sizes and mtimes of the database files, read inside the sidecar (no docker exec)."""
+        if self.sidecar is not None:
+            return self.sidecar.ask({"op": "stat"})["stat"]
+        return self.sh("stat -c '%n %s %y' /config/data/jellyfin.db* 2>/dev/null")
 
     # ---- Gelato specifics
 

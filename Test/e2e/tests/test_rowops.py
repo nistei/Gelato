@@ -14,7 +14,7 @@ def run(t):
     t.check("attachment" in (headers.get("Content-Disposition") or ""), "download has a file name")
 
     t.api.post(f"/Items/{row}/Refresh?metadataRefreshMode=FullRefresh&imageRefreshMode=FullRefresh&replaceAllMetadata=true&replaceAllImages=true")
-    time.sleep(8)
+    t.settle(after=2)
     r = t.db.one("select Name, Tags, lower(replace(PrimaryVersionId,'-','')), (select count(*) from BaseItemProviders p where p.ItemId=b.Id) "
                  "from BaseItems b where lower(replace(Id,'-',''))=?", (row,))
     t.log("row after refresh:", r)

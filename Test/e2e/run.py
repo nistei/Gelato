@@ -29,6 +29,7 @@ The tests change the instance (they play, mark, purge and delete things); use a 
 run creates a second user for the multi-user tests when it is missing.
 """
 import argparse
+import json
 import os
 import random
 import sys
@@ -65,6 +66,21 @@ def preflight(api, db, selected):
     return ok
 
 
+def shard(selected, index, count):
+    """Shard `index` of `count` (1-based): the longest tests first onto the lightest shard, then back
+    in run order. Every shard computes the same split from the same weights."""
+    with open(os.path.join(HERE, "jfapi", "weights.json"), encoding="utf-8") as h:
+        weights = json.load(h)
+    default = sum(weights.values()) / max(len(weights), 1)
+    load, mine = [0.0] * count, set()
+    for name, _ in sorted(selected, key=lambda x: -weights.get(x[0], default)):
+        i = load.index(min(load))
+        load[i] += weights.get(name, default)
+        if i == index - 1:
+            mine.add(name)
+    return [(n, m) for n, m in selected if n in mine]
+
+
 def main():
     p = argparse.ArgumentParser(description="Gelato checks against a Jellyfin instance", formatter_class=argparse.RawDescriptionHelpFormatter,
                                 epilog=__doc__.split("\n", 1)[1])
@@ -82,6 +98,8 @@ def main():
     p.add_argument("--seed", type=int, default=None, help="seed for the picks (default: a new one, printed)")
     p.add_argument("--addon", choices=("replay", "live", "refresh"), default="replay",
                    help="replay: catalogs and metas from the recording, streams live (default); live: the addon for everything; refresh: record anew")
+    p.add_argument("--shard", metavar="I/N", help="run only shard I of N (1-based): the selected tests split by their typical duration "
+                   "(jfapi/weights.json), each shard on its own instance, see tools/parallel.py")
     p.add_argument("--no-rerun", action="store_true", help="do not run failed tests again alone")
     args = p.parse_args()
 
@@ -107,6 +125,8 @@ def main():
         elif getattr(mod, "DESTRUCTIVE", False) and not args.destructive:
             continue
         selected.append((name, mod))
+    if args.shard:
+        selected = shard(selected, *map(int, args.shard.split("/")))
     unknown = [x for x in args.tests if not any(n.startswith(x) for n in tests)]
     if unknown:
         print("unknown tests:", ", ".join(unknown), "(see 'list')")
@@ -161,8 +181,12 @@ def main():
             recorder.close()
 
 
+TIMINGS = []  # (test, seconds in the test, seconds waiting for an idle server, other harness seconds)
+
+
 def run_one(args, api, db, fixtures, name, mod, seed, scope, label):
     """Waits for an idle server, then runs one test with its own seeded picks."""
+    t_start = time.time()
     waited = quiesce(api, db, lambda m: print("      " + m))
     db.reseed(seed, scope)
     ctx = Context(api, db, fixtures.for_test(scope), make_user2(api, on_call=db.invalidate), verbose=args.verbose)
@@ -170,6 +194,7 @@ def run_one(args, api, db, fixtures, name, mod, seed, scope, label):
     print(f"{label} {name:12} {mod.DESCRIPTION}{note}")
     status, seconds = run_test(name, mod, ctx)
     print(f"           -> {status} ({ctx.passed} check(s) passed, {len(ctx.failures)} failed, {seconds:.0f}s)")
+    TIMINGS.append((name, seconds, waited, time.time() - t_start - seconds - waited))
     if status in ("FAIL", "ERROR") and not args.verbose:
         for line in ctx.lines:
             print("      " + line)
@@ -200,6 +225,12 @@ def run_selected(args, api, db, fixtures, selected, seed):
             if status in ("ok", "KNOWN"):
                 results[name] = "flaky"
 
+    if TIMINGS:
+        print("\n  slowest tests (test s / idle wait s / other harness s):")
+        for n, sec, w, o in sorted(TIMINGS, key=lambda x: -x[1])[:15]:
+            print(f"    {n:14} {sec:6.1f} {w:6.1f} {o:6.1f}")
+        print(f"  total: tests {sum(x[1] for x in TIMINGS):.0f}s, idle wait {sum(x[2] for x in TIMINGS):.0f}s, "
+              f"other {sum(x[3] for x in TIMINGS):.0f}s")
     counts = {s: sum(1 for st in results.values() if st == s) for s in ("ok", "FAIL", "ERROR", "flaky", "KNOWN", "SKIP")}
     print(f"\n{counts['ok']} passed, {counts['FAIL']} failed, {counts['ERROR']} errored, {counts['flaky']} flaky, "
           f"{counts['KNOWN']} known, {counts['SKIP']} skipped in {time.time() - t0:.0f}s (seed {seed})")

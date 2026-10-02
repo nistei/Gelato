@@ -107,6 +107,13 @@ class Context:
     def wait(self, seconds):
         time.sleep(seconds)
 
+    def settle(self, after=0.0, timeout=30):
+        """Returns once the server has stopped writing (no task running, database files unchanged
+        over two looks), after at least `after` seconds. Replaces a fixed sleep that waited for a
+        task's or a refresh's background writes."""
+        time.sleep(after)
+        return quiesce(self.api, self.db, lambda m: self.log(m), timeout)
+
 
 def make_user2(api, name=SECOND_USER, on_call=None):
     """The second user for the multi-user tests, created on the instance when missing (access to
@@ -130,22 +137,21 @@ def make_user2(api, name=SECOND_USER, on_call=None):
 
 def quiesce(api, db, log, timeout=180):
     """Waits until the server is idle: no scheduled task running and the database files unchanged
-    over two looks two seconds apart. A test left a refresh, a scan or a task behind it, and the
+    over two looks half a second apart. A test left a refresh, a scan or a task behind it, and the
     next one ran into it: its counts moved under it and its queries waited on the database.
     Returns the seconds waited; gives up after `timeout` and says so."""
     t0 = time.time()
-    stat = "stat -c '%n %s %y' /config/data/jellyfin.db* 2>/dev/null"
     last, running = None, []
     while time.time() - t0 < timeout:
         try:
             running = [t["Name"] for t in api.get("/ScheduledTasks") if t.get("State") != "Idle"]
         except ApiError:
             running = []
-        now = db.sh(stat)
+        now = db.db_stat()
         if not running and now == last:
             return time.time() - t0
         last = now
-        time.sleep(2)
+        time.sleep(0.5)
     log(f"server not idle after {timeout}s (running: {', '.join(running) or 'none'}, database still written), going on")
     return time.time() - t0
 

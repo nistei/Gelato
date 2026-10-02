@@ -3,7 +3,9 @@ DESTRUCTIVE = True  # changes the plugin configuration for the run of the task a
 
 import time
 
-from jfapi.bootstrap import CATALOG_ITEMS, GELATO
+from jfapi.bootstrap import GELATO
+
+CATALOG_ITEMS = 5  # every new movie costs a metadata fetch and a refresh: 20 took 145 s on a fresh instance
 
 
 def run(t):

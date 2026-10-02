@@ -194,13 +194,16 @@ class Api:
     def run_task(self, key, timeout=600):
         """Runs the scheduled task and waits: (status, message)."""
         task = self.task(key)
+        before = (task.get("LastExecutionResult") or {}).get("EndTimeUtc")
         self.post(f"/ScheduledTasks/Running/{task['Id']}")
         t0 = time.time()
         while time.time() - t0 < timeout:
-            time.sleep(2)
+            time.sleep(0.3)
             t = self.get(f"/ScheduledTasks/{task['Id']}")
-            if t["State"] == "Idle":
-                r = t.get("LastExecutionResult") or {}
+            r = t.get("LastExecutionResult") or {}
+            # Done when idle with a new result; a task that cannot start leaves the old one, so
+            # idle for 3 s without a new result counts as done too.
+            if t["State"] == "Idle" and (r.get("EndTimeUtc") != before or time.time() - t0 > 3):
                 return r.get("Status"), (r.get("ErrorMessage") or "")[:200]
         return "Running", f"still running after {timeout}s"
 

@@ -33,12 +33,16 @@ def run(t):
     folder = lambda: t.db.one("select count(*) from BaseItems where Path=? and Type like '%.Folder'", (path,))[0]
     if not folder():
         u1.post("/Library/Refresh")
-        time.sleep(5)
+        t.settle(after=1)
         t.check(u1.wait_tasks_idle("RefreshLibrary", 1800), "library scan finished")
     t.check(folder() == 1, f"the folder item for {path} exists")
-    t.wait(12)  # Gelato memoizes its folder lookup for 10 s; the seeding search saw no folder yet
-
-    hits = u2.search(stremio)
+    # Gelato memoizes its folder lookup for 10 s; the seeding search saw no folder yet
+    hits = []
+    for _ in range(14):
+        hits = u2.search(stremio, retries=0)
+        if hits:
+            break
+        time.sleep(1)
     t.check(hits, f"{u2.name} finds the title in search")
     if not hits:
         return

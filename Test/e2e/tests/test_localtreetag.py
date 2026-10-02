@@ -23,7 +23,7 @@ def drop_added_seasons(t, series_id):
     for season in t.api.get(f"/Shows/{series_id}/Seasons?userId={t.api.user}").get("Items", []):
         if season.get("IndexNumber") != 1:
             t.api.call("DELETE", f"/Items/{season['Id']}")
-    t.wait(2)
+    t.settle()
     return len(episode_tree(t, series_id))
 
 
@@ -46,7 +46,7 @@ def run(t):
         drop_added_seasons(t, series_id)
         status, msg = t.api.run_task(TASK, timeout=1800)
         t.equal(status, "Completed", f"sync series trees {msg}")
-        t.wait(5)
+        t.settle()
         extended = episode_tree(t, series_id)
         t.log(f"after the task: seasons {season_numbers(t, series_id)}, {len(extended)} episodes, tags {tags(t, series_id)[-1:]}")
         t.check(len(extended) > 10, f"the task extends the local series ({len(extended)} episodes)")
@@ -60,7 +60,7 @@ def run(t):
         t.check(left < len(extended), f"the added seasons are gone ({left} episodes left)")
         status, msg = t.api.run_task(TASK, timeout=1800)
         t.equal(status, "Completed", f"sync series trees again {msg}")
-        t.wait(5)
+        t.settle()
         again = episode_tree(t, series_id)
         t.log(f"after the second task run: {len(again)} episodes, tags {tags(t, series_id)[-1:]}")
         t.equal(len(again), len(extended), "the task brings the tree back")
@@ -70,7 +70,7 @@ def run(t):
             drop_added_seasons(t, series_id)
         t.api.post(f"/Plugins/{GELATO}/Configuration", {**cfg, "ExtendLocalSeriesTrees": False})
         t.api.item(series_id)
-        t.wait(5)
+        t.settle()
         t.api.post(f"/Plugins/{GELATO}/Configuration", {**cfg, "ExtendLocalSeriesTrees": True})
         back = open_local_series(t, series_id)
         t.log(f"after the option was turned off and on: {len(back)} episodes, tags {tags(t, series_id)[-1:]}")
