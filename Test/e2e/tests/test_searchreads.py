@@ -1,5 +1,6 @@
 DESCRIPTION = "The details-page reads a client issues with a search result's id (ancestors, similar, theme media) answer for the library item the result is, while it is being inserted too, and read nothing into the library"
 
+import shlex
 import threading
 import time
 
@@ -24,7 +25,7 @@ CANDIDATE_SQL = (
     "select lower(replace(b.Id,'-','')), b.Name, p.ProviderValue from BaseItems b "
     "join BaseItemProviders p on p.ItemId=b.Id and lower(p.ProviderId)='stremio' "
     "where b.Type like '%Movies.Movie' and (b.Tags is null or b.Tags not like '%gelato-stream%') "
-    "and b.PrimaryVersionId is null and p.ProviderValue like 'tt%' order by random() limit 6"
+    "and b.PrimaryVersionId is null and p.ProviderValue like 'tt%' order by random() limit 12"
 )
 
 
@@ -37,6 +38,13 @@ def in_library(t, stremio):
     return t.db.one(
         "select count(*) from BaseItems b join BaseItemProviders p on p.ItemId=b.Id and lower(p.ProviderId)='stremio' "
         "where p.ProviderValue=? and (b.Tags is null or b.Tags not like '%gelato-stream%')", (stremio,))[0]
+
+
+def addon_answered(t, term):
+    """Whether the addon's results for the last search of `term` included a title the library has (Gelato logs
+    owned=N for every search): only then does the filter hold the meta the stand-in id is resolved through."""
+    line = t.sh("cat /config/log/log_*.log 2>/dev/null | grep -F " + shlex.quote(f'Intercepted /Items search ""{term}""') + " | tail -1")
+    return "owned=" in line and "owned=0 " not in line
 
 
 def run(t):
@@ -59,6 +67,11 @@ def run(t):
         if candidate == item_id:
             continue
         hits = t.api.search(name, "Movie", limit=25)
+        if not addon_answered(t, name):
+            # The id of the stand-in is resolved through the addon's result for the title. A title the addon's search
+            # does not find (recent or obscure ones) has none, so every read with that id is a 404 by design.
+            t.log(f"skipped {name}: the addon's search did not return it")
+            continue
         if any(h["Id"].lower() == item_id for h in hits):
             movie, search_id = item_id, candidate
             t.log(f"{name} ({stremio}): the search answers with the library item {item_id[:8]}, "
@@ -66,7 +79,7 @@ def run(t):
             break
         t.log(f"skipped {name}: the search does not answer with the library item")
     if movie is None:
-        t.skip("the search answered with none of six library movies under its own name")
+        t.skip("the addon found none of twelve library movies by name")
 
     def read(item_id, path):
         st, d = t.api.call("GET", path.format(id=item_id, user=t.api.user))

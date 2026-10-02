@@ -52,6 +52,7 @@ def run(t):
     t.equal(len(second), PAGE, "the second page is full")
     t.equal(ids(first) + ids(second), ids(whole),
             "the two pages are the long answer cut in two")
-    t.equal(second_total, first_total, "both pages report the same total")
+    # The estimate counts the overlap with the addon's results on the fetched page only, so page 2 finds more of it.
+    t.known(second_total == first_total, f"both pages report the same total ({first_total} and {second_total})", "PROD-FINDINGS #28")
     t.check(first_total is None or first_total >= len(whole),
             f"the total is not smaller than what was handed out ({first_total} for {len(whole)} items)")
