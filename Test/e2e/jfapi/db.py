@@ -327,6 +327,19 @@ class Db:
             out[id_] = ({norm(u) for u in g.get("userIds") or []}, pv or None, g.get("index"), g.get("guid"))
         return out
 
+    def listed_movie_count(self, cfg):
+        """How many movies the library listing should show: every movie item, minus (with FilterUnreleased) the Gelato
+        titles whose end date is within the buffer or ahead -- the plugin's UnreleasedListingFilter hides those."""
+        base = ("Type like '%Movies.Movie' and (Tags is null or Tags not like ?) and PrimaryVersionId is null and IsVirtualItem=0")
+        total = self.one(f"select count(*) from BaseItems where {base}", (STREAM_TAG,))[0]
+        if not cfg.get("FilterUnreleased"):
+            return total
+        buffer_days = int(cfg.get("FilterUnreleasedBufferDays") or 0)
+        hidden = self.one(
+            f"select count(*) from BaseItems b where {base} and EndDate > strftime('%Y-%m-%d 00:00:00', 'now', '-{buffer_days} day') "
+            "and exists (select 1 from BaseItemProviders p where p.ItemId=b.Id and lower(p.ProviderId)='stremio')", (STREAM_TAG,))[0]
+        return total - hidden
+
     def stream_row_ids(self, con=None):
         return {r[0] for r in self.query("select lower(replace(Id,'-','')) from BaseItems where Tags like ?", (STREAM_TAG,), con)}
 

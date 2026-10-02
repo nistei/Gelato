@@ -31,20 +31,12 @@ def run(t):
         t.check(after[0] >= before[0], "no movie was lost")
         t.check(after[0] - before[0] <= CATALOG_ITEMS, f"at most {CATALOG_ITEMS} movies added")
         t.equal(after[1], before[1], "the import created no stream rows")
-        # With FilterUnreleased on, Gelato keeps a title whose release is still ahead (or within the
-        # buffer) out of every listing, so it is in the database and not in this answer. Earlier
-        # tests insert titles from search, and an unreleased one among them made this check fail
-        # with a listing one short of the database. The setting is off on the prod copy, where every
-        # movie is listed, so the count follows the configuration instead of assuming either.
-        hidden = 0
-        if cfg.get("FilterUnreleased"):
-            buffer_days = int(cfg.get("FilterUnreleasedBufferDays") or 0)
-            hidden = t.db.one(
-                "select count(*) from BaseItems where Type like '%Movies.Movie' and (Tags is null or Tags not like '%gelato-stream%') "
-                f"and PrimaryVersionId is null and EndDate > date('now', '-{buffer_days} day')")[0]
+        # With FilterUnreleased on, Gelato keeps a title whose release is still ahead (or within the buffer) out of
+        # every listing, so it is in the database and not in this answer: count what the listing should show.
+        expected = t.db.listed_movie_count(cfg)
         listed = t.api.get(f"/Items?userId={t.api.user}&IncludeItemTypes=Movie&Recursive=true&Limit=5000")
-        t.log(f"{after[0]} movies in the database, {hidden} kept out of the listings as unreleased")
-        t.equal(listed.get("TotalRecordCount"), after[0] - hidden,
+        t.log(f"{after[0]} movies in the database, {after[0] - expected} kept out of the listings")
+        t.equal(listed.get("TotalRecordCount"), expected,
                 "the library lists every movie it does not hide once, no rows")
     finally:
         cfg.update(old)

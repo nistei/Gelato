@@ -2,6 +2,8 @@ DESCRIPTION = "No stream row shows up as an item, and nothing is doubled: librar
 
 import urllib.parse
 
+from jfapi.bootstrap import GELATO
+
 COLLECTION = "jfapi-collection"
 
 
@@ -38,8 +40,8 @@ def run(t):
             t.equal(d["TotalRecordCount"], total, f"{label}: TotalRecordCount")
         return ids
 
-    db_movies = t.db.one("select count(*) from BaseItems where Type like '%Movies.Movie' and (Tags is null or Tags not like '%gelato-stream%') "
-                         "and PrimaryVersionId is null and IsVirtualItem=0")[0]
+    # FilterUnreleased (on in prod) keeps the unreleased titles out of the listing: count what it should show.
+    db_movies = t.db.listed_movie_count(t.api.get("/Plugins/%s/Configuration" % GELATO))
     listing("library movies", f"/Items?userId={u}&IncludeItemTypes=Movie&Recursive=true&Limit=5000&Fields=ProviderIds", movie, db_movies)
     listing("recently added movies", f"/Items?userId={u}&IncludeItemTypes=Movie&Recursive=true&SortBy=DateCreated&SortOrder=Descending&Limit=100")
     listing("latest movies", f"/Users/{u}/Items/Latest?IncludeItemTypes=Movie&Limit=100")
