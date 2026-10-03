@@ -43,9 +43,8 @@ def run(t):
         movies = folder_id(cfg.get("MoviePath") or MOVIE_PATH)
         before = movies_in(movies)
 
-        status, msg = api.run_task("GelatoCatalogItemsSync", timeout=1800)
-        t.equal(status, "Completed", f"catalog sync {msg}")
-        t.settle(after=1, timeout=300)  # the scan the import queues
+        # The catalog's own import: what the task runs, without the library scan after it.
+        t.check(t.import_catalog(cat), "catalog sync completed")
         line = t.sh("grep -h ': processed ' /config/log/*.log | tail -1").strip()
         t.log(line[-170:])
         t.check(f"processed {LIMIT} items" in line, f"a catalog without a limit of its own imports the global {LIMIT}")

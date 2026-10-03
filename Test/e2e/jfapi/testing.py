@@ -134,6 +134,20 @@ class Context:
         time.sleep(max(0.0, FOLDER_MEMO_SECONDS + 0.5 - (time.time() - seen)))
         return True
 
+    def import_catalog(self, catalog, timeout=600):
+        """Imports one catalog as its Import button does and waits for it: the import the scheduled
+        task runs for every enabled catalog, without the library scan the task queues after them
+        (~9 s on a prod copy, and the test has to wait for it). The endpoint answers at once and
+        imports in the background, so the end is read from the log. True when it completed."""
+        ended = "cat /config/log/*.log | grep 'CatalogImportService: Catalog .* sync '"
+        count = lambda: int(self.sh(ended + " | wc -l").strip() or 0)
+        before, t0 = count(), time.time()
+        self.api.post(f"/gelato/catalogs/{catalog['Id']}/{catalog['Type']}/import")
+        while count() == before and time.time() - t0 < timeout:
+            time.sleep(0.2)
+        self.settle()
+        return count() > before and 'sync "completed"' in self.sh(ended + " | tail -1")
+
 
 def make_user2(api, name=SECOND_USER, on_call=None):
     """The second user for the multi-user tests, created on the instance when missing (access to
