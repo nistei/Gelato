@@ -8,6 +8,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # the jfapi package
 from jfapi.db import query
 
+sys.stdout.reconfigure(encoding="utf-8")  # item names; the Windows console's code page mangles them
 cols, rows = query(sys.argv[1])
 print(" | ".join(cols))
 for r in rows:

@@ -62,7 +62,8 @@ for line in sys.stdin:
             out = {}
         else:
             c = cons[r["con"]] if r.get("con") else live
-            out = {"rows": [[enc(v) for v in row] for row in c.execute(r["sql"], r.get("params") or []).fetchall()]}
+            cur = c.execute(r["sql"], r.get("params") or [])
+            out = {"rows": [[enc(v) for v in row] for row in cur.fetchall()], "cols": [d[0] for d in cur.description or []]}
     except Exception as e:
         out = {"error": type(e).__name__ + ": " + str(e)}
     print(json.dumps(out))
@@ -100,9 +101,12 @@ class Sidecar:
         return out
 
     def rows(self, sql, params=(), con=None):
+        return self.rows_and_cols(sql, params, con)[0]
+
+    def rows_and_cols(self, sql, params=(), con=None):
         dec = lambda v: base64.b64decode(v["$b"]) if isinstance(v, dict) else v
         out = self.ask({"op": "q", "sql": sql, "params": list(params), "con": con})
-        return [tuple(dec(v) for v in row) for row in out["rows"]]
+        return [tuple(dec(v) for v in row) for row in out["rows"]], out.get("cols") or []
 
     def close(self):
         try:
@@ -171,8 +175,9 @@ class SidecarConnection:
         self.id = sidecar.ask({"op": "open"})["con"]
 
     def execute(self, sql, params=()):
-        rows = self.sidecar.rows(sql, params, self.id)
-        return type("Cursor", (), {"fetchall": lambda _: rows, "fetchone": lambda _: rows[0] if rows else None})()
+        rows, cols = self.sidecar.rows_and_cols(sql, params, self.id)
+        return type("Cursor", (), {"fetchall": lambda _: rows, "fetchone": lambda _: rows[0] if rows else None,
+                                   "description": [(c,) for c in cols] or None})()
 
     def close(self):
         self.sidecar.ask({"op": "close", "con": self.id})
