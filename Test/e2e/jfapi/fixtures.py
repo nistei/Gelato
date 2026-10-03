@@ -14,6 +14,9 @@ MOVIE_SQL = (
     "join BaseItemProviders p on p.ItemId=b.Id and lower(p.ProviderId)='stremio' "
     "where b.Type like '%Movies.Movie' and (b.Tags is null or b.Tags not like ?) and b.PrimaryVersionId is null "
     "and b.ProductionYear between 2005 and 2024 and b.CommunityRating >= 6.5 "
+    # Feature length: Jellyfin keeps no resume point for an item under 5 minutes (MinResumeDurationSeconds),
+    # and play failed every watch-state check on a 4-minute short.
+    "and b.RunTimeTicks >= 36000000000 "
 )
 
 
