@@ -2,7 +2,6 @@ DESCRIPTION = "Catalog moves keep to their rules: an item in another catalog's l
 DESTRUCTIVE = True  # changes the plugin configuration and a user's access, adds libraries, runs the catalog import
 
 import threading
-import time
 
 from jfapi.api import search_result_id
 from jfapi.bootstrap import GELATO, MOVIE_PATH
@@ -52,8 +51,7 @@ def run(t):
     def sync(label):
         status, msg = api.run_task("GelatoCatalogItemsSync", timeout=1800)
         t.equal(status, "Completed", f"catalog sync ({label}) {msg}")
-        time.sleep(5)
-        api.wait_tasks_idle("RefreshLibrary", 1800)
+        t.settle(after=1, timeout=300)  # the scan the import queues
 
     def open_from_search(user, movie):
         """Opens the title under the id a search result of the addon carries: what a client holds
@@ -75,11 +73,10 @@ def run(t):
         users.append({"UserId": u2.user, "Url": cfg["Url"], "MoviePath": dirs[LIB_USER],
                       "SeriesPath": cfg.get("SeriesPath"), "DisableSearch": False})
         configure("", "", users)
-        time.sleep(5)
+        t.folders_ready(*dirs.values())
         t.check(api.wait_tasks_idle("RefreshLibrary", 1800), "the scan the folders queued finished")
         a, b, own, default = (folder_id(dirs[LIB_A]), folder_id(dirs[LIB_B]), folder_id(dirs[LIB_USER]), folder_id(default_path))
         t.check(a and b and own and default, "all four folders are in the library")
-        t.wait(12)  # Gelato memoizes its folder lookup for 10 s
 
         # 1. A user's own folder. The user cannot open the default movies library, so opening one of
         # its titles from search puts it into the user's folder, as it always has.

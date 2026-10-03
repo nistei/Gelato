@@ -2,7 +2,6 @@ DESCRIPTION = "Search inside a catalog's library: the addon answers for the kind
 DESTRUCTIVE = True  # changes the plugin configuration and adds a library
 
 import re
-import time
 import urllib.parse
 
 from jfapi.bootstrap import GELATO, SERIES_PATH
@@ -58,7 +57,7 @@ def run(t):
                      {"LibraryOptions": {"EnableRealtimeMonitor": False}})
             created = True
         path = api.post(f"/gelato/libraries/{library()['ItemId']}/folder")["Path"]
-        time.sleep(5)
+        t.folders_ready(path)
         t.check(api.wait_tasks_idle("RefreshLibrary", 1800), "the scan the folder queued finished")
         t.check(folder_id(path), "the library's Gelato folder exists")
         scope = library()["ItemId"]
@@ -71,7 +70,6 @@ def run(t):
         # The library is the series catalog's: its folder is one Gelato imports into.
         cfg["Catalogs"] = [{**c, "Path": path} if c is cat else c for c in old]
         api.post(f"/Plugins/{GELATO}/Configuration", cfg)
-        t.wait(12)  # Gelato memoizes its folder lookup for 10 s
 
         hits = list(fresh("Series", SERIES_TERMS, scope))
         t.check(hits, "a search inside the catalog's library is answered by the addon")
