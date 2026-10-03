@@ -47,7 +47,10 @@ def add_library(t, name, kind, path, expect_type, expect_count, timeout=120):
             f"/Items?userId={t.api.user}&ParentId={lib}&IncludeItemTypes={expect_type}&Recursive=true").get("Items", [])]
         if len(ids) >= expect_count:
             break
-        t.wait(2)
+        t.wait(0.5)
+    # The items are listed before the refresh has named them (provider ids, season and episode
+    # numbers): a series opened right now is not extended, there is no id to ask the addon with.
+    t.settle(timeout=60)
     t.equal(len(ids), expect_count, f"native {expect_type} items scanned into {name}")
     return lib, ids
 
@@ -108,15 +111,15 @@ def open_local_series(t, series_id, local_episodes=1, timeout=120):
     episode" failure). The tree counts as settled when it is past the local episodes, has no entry
     without numbers, and two polls agree on its size."""
     t.api.item(series_id)
-    waited, size = 0, None
-    while waited < timeout:
+    t0, size = time.time(), None
+    while time.time() - t0 < timeout:
         tree = episode_tree(t, series_id)
         settled = len(tree) > local_episodes and all(s is not None and e is not None for s, e in tree)
         if settled and len(tree) == size:
             return tree
         size = len(tree) if settled else None
-        t.wait(3)
-        waited += 3
+        # Until the server stopped writing, not a fixed 3 s: the tree is saved in the background.
+        t.settle(after=1, timeout=10)
     return episode_tree(t, series_id)
 
 
