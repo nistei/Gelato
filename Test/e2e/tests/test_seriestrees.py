@@ -28,6 +28,9 @@ def pick_series(t):
             series_id = d.get("Id", "").lower()
             if d.get("Status") == "Continuing" and len(t.episodes(series_id, 1)) >= 2:
                 t.log(f"inserted from search: {d.get('Name')} ({series_id[:8]})")
+                # The insert refreshes the new series' episodes in the background: an edit made
+                # meanwhile was written over (lockmeta saw its locked episode back as the addon has it).
+                t.settle(after=2, timeout=180)
                 return series_id, True
             t.api.delete_inserted(series_id)
     return None, False
