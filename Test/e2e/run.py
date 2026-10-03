@@ -1,6 +1,6 @@
 """Runs the Gelato checks against a Jellyfin instance running in a Docker container.
 
-    python run.py --addon-url <addon URL>            # a bare instance from Test/docker-compose.tests.yml: set up, then every non-destructive test
+    python run.py --addon-url <addon URL>            # a bare instance (see Test/README.md): set up, then every non-destructive test
     python run.py --container <name>                 # every non-destructive test, server on http://localhost:8096
     python run.py --container <name> --url http://host:8096 --adminuser admin --adminpassword secret
     python run.py --container <name> play nextup -v  # some tests, with their notes
@@ -23,7 +23,7 @@ How a run keeps its results comparable:
 
 Environment variables stand in for the options: JF_CONTAINER, JF_URL, JF_ADMINUSER, JF_ADMINPASSWORD,
 JF_ADDON_URL. An empty instance (wizard not completed, or Gelato without addon URL and libraries)
-is set up first when --addon-url is given: wizard, Gelato config with one movie and one series
+is set up first when --addon-url is given, or the instance's Gelato config file has one: wizard, Gelato config with one movie and one series
 catalog of 20 items, libraries, scan, catalog import. Gelato must already be in the plugin folder.
 The tests change the instance (they play, mark, purge and delete things); use a throwaway one. The
 run creates a second user for the multi-user tests when it is missing.
@@ -137,6 +137,8 @@ def main():
     if info is None:
         print(f"{args.url} did not answer within 3 minutes: is the instance running, and is --url its address?")
         return 2
+    if not args.addon_url and args.container:
+        args.addon_url = bootstrap.configured_addon_url(args.container)
     if not info.get("StartupWizardCompleted"):
         if not args.addon_url:
             print("the instance is empty (startup wizard not completed): pass --addon-url to set it up")

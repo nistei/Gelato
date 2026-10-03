@@ -69,6 +69,18 @@ def gelato_libraries(api):
     return [v for v in api.get("/Library/VirtualFolders") if any(p in (MOVIE_PATH, SERIES_PATH) for p in v.get("Locations", []))]
 
 
+def configured_addon_url(container):
+    """The addon URL in the instance's Gelato config file, readable before the wizard: an instance
+    made for the tests can come with it, so the run needs no --addon-url. None without one."""
+    r = subprocess.run(["docker", "exec", container, "cat", "/config/plugins/configurations/Gelato.xml"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    import xml.etree.ElementTree as ET
+    try:
+        return (ET.fromstring(r.stdout).findtext("Url") or "").strip() or None
+    except ET.ParseError:
+        return None
+
+
 def needs_setup(api):
     cfg = api.get(f"/Plugins/{GELATO}/Configuration")
     return not cfg.get("Url") or len(gelato_libraries(api)) < 2

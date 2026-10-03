@@ -10,19 +10,25 @@ Python 3, standard library only. The tests require Docker.
 # Build the plugin
 dotnet build Gelato.csproj -c Release
 
-# Start a throwaway Jellyfin instance with the plugin installed
-docker compose -f Test/docker-compose.tests.yml up -d
+# Start a throwaway Jellyfin 12.1 with the plugin installed (Jellyfin writes a meta.json into the
+# mounted folder on the first start, so the mount is not read-only)
+docker run -d --name jf-tests -p 8096:8096 -v jf-tests-config:/config -v jf-tests-cache:/cache \
+  -v "$PWD/bin/Release/net10.0:/config/plugins/Gelato" jellyfin/jellyfin:12.1
 
 # Run the tests
-# The addon URL is the AIOStreams manifest. Can also be set via ENV JF_ADDON_URL
-python Test/e2e/run.py --destructive --addon-url <addon URL>
+# The addon URL is the AIOStreams manifest. Can also be set via ENV JF_ADDON_URL, or come with the
+# instance: an addon URL in its /config/plugins/configurations/Gelato.xml is used when none is given.
+python Test/e2e/run.py --container jf-tests --destructive --addon-url <addon URL>
 
 # throw the instance away
-docker compose -f Test/docker-compose.tests.yml down -v
+docker rm -f jf-tests && docker volume rm jf-tests-config jf-tests-cache
 ```
 
 The addon URL is the AIOStreams manifest.
 The setup creates the administrator `admin` with the password `jfapi` unless given otherwise.
+Tests that count Gelato's Debug lines set Gelato to Debug in `/config/config/logging.json` and restart
+the server when it does not log at Debug yet: Jellyfin applies a log level only on a restart. An
+instance started with that file in place saves them the restarts.
 
 
 ## Running against an existing instance
