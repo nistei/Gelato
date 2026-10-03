@@ -7,6 +7,7 @@ Ith instance (`run.py --shard I/N`, split by jfapi/weights.json), the output of 
 `.cache/shard-<I>.txt`. Extra arguments after `--` go to every run.py. Exit code 1 if any shard failed.
 """
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -49,7 +50,40 @@ def main():
             print("  " + line.strip())
         rc |= 1 if proc.returncode else 0
     print(f"wall clock {time.time() - t0:.0f}s")
+    update_weights([out.name for _, _, out in procs])
     return rc
+
+
+def update_weights(outputs):
+    """Folds the measured seconds of the tests that passed (or ended KNOWN) into .cache/weights.json, half the
+    old value and half the new: the next split then balances by what the tests take now. A failed or skipped
+    test says nothing about its usual length (a dead link waits 100 s, a skip ends early)."""
+    sys.path.insert(0, HERE)
+    from run import load_weights
+    weights, measured = load_weights(), {}
+    for path in outputs:
+        name = None
+        for line in open(path, encoding="utf-8", errors="replace"):
+            m = re.match(r"^\[\s*(\d+/\d+|alone)\] (\S+)", line)
+            if m:
+                name = None if m.group(1) == "alone" else m.group(2)
+            m = re.match(r"^\s+-> (ok|KNOWN) \(.*, (\d+)s\)", line)
+            if m and name:
+                measured[name] = int(m.group(2))
+    if not measured:
+        return
+    path = os.path.join(HERE, ".cache", "weights.json")
+    try:
+        with open(path, encoding="utf-8") as h:
+            local = json.load(h)
+    except (OSError, ValueError):
+        local = {}
+    for name, sec in measured.items():
+        old = weights.get(name)
+        local[name] = max(1, round((old + sec) / 2) if old is not None else sec)
+    with open(path, "w", encoding="utf-8") as h:
+        json.dump(dict(sorted(local.items())), h, indent=1)
+    print(f"weights of {len(measured)} test(s) updated in .cache/weights.json")
 
 
 if __name__ == "__main__":

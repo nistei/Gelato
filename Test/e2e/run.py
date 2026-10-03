@@ -66,11 +66,23 @@ def preflight(api, db, selected):
     return ok
 
 
+def load_weights():
+    """Seconds per test: the committed jfapi/weights.json, overlaid with what tools/parallel.py measured on this
+    machine (.cache/weights.json), so the shards stay even as tests grow or slow down."""
+    with open(os.path.join(HERE, "jfapi", "weights.json"), encoding="utf-8") as h:
+        weights = json.load(h)
+    try:
+        with open(os.path.join(HERE, ".cache", "weights.json"), encoding="utf-8") as h:
+            weights.update(json.load(h))
+    except (OSError, ValueError):
+        pass
+    return weights
+
+
 def shard(selected, index, count):
     """Shard `index` of `count` (1-based): the longest tests first onto the lightest shard, then back
     in run order. Every shard computes the same split from the same weights."""
-    with open(os.path.join(HERE, "jfapi", "weights.json"), encoding="utf-8") as h:
-        weights = json.load(h)
+    weights = load_weights()
     default = sum(weights.values()) / max(len(weights), 1)
     load, mine = [0.0] * count, set()
     for name, _ in sorted(selected, key=lambda x: -weights.get(x[0], default)):
