@@ -5,6 +5,7 @@ using Jellyfin.Data.Enums;
 using MediaBrowser.Controller.Collections;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
+using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
 using Microsoft.Extensions.Logging;
 
@@ -20,6 +21,52 @@ public class CatalogImportService(
     ILibraryManager libraryManager
 )
 {
+    private static readonly TimeSpan FolderWait = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// The catalog's folder. A library that was picked a moment ago has the folder among its
+    /// locations before the scan has made it an item: the import waits for that scan, up to a
+    /// minute, instead of importing into the default folders as it does for a folder that is in
+    /// no library at all.
+    /// </summary>
+    private async Task<Folder?> WaitForCatalogFolderAsync(
+        CatalogConfig catalog,
+        CancellationToken ct
+    )
+    {
+        var folder = manager.TryGetCatalogFolder(catalog);
+        if (folder is not null || string.IsNullOrWhiteSpace(catalog.Path))
+            return folder;
+
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        var waited = Stopwatch.StartNew();
+        while (
+            folder is null
+            && waited.Elapsed < FolderWait
+            && libraryManager
+                .GetVirtualFolders()
+                .Any(v => v.Locations.Any(l => string.Equals(l, catalog.Path, comparison)))
+        )
+        {
+            await Task.Delay(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
+            folder = manager.TryGetCatalogFolder(catalog);
+        }
+
+        if (folder is not null)
+        {
+            logger.LogInformation(
+                "Catalog {Name}: waited {Seconds:F0}s for the scan that adds {Path} to its library",
+                catalog.Name,
+                waited.Elapsed.TotalSeconds,
+                catalog.Path
+            );
+        }
+
+        return folder;
+    }
+
     public async Task ImportCatalogAsync(
         string catalogId,
         string type,
@@ -41,8 +88,35 @@ public class CatalogImportService(
         }
         var cfg = GelatoPlugin.Instance!.GetConfig(Guid.Empty);
         var stremio = cfg.Stremio;
-        var seriesFolder = cfg.SeriesFolder;
-        var movieFolder = cfg.MovieFolder;
+
+        var catalogFolder = await WaitForCatalogFolderAsync(catalogCfg, ct).ConfigureAwait(false);
+
+        // The catalog names a folder that is not there: in no library, or not reachable. New
+        // items go to the movie and series folders, and nothing is moved: without this, a folder
+        // that is gone for a while would send everything the catalog has in it back to the
+        // default folders.
+        var folderMissing = catalogFolder is null && !string.IsNullOrWhiteSpace(catalogCfg.Path);
+        if (folderMissing)
+        {
+            logger.LogWarning(
+                "Catalog {Name}: folder {Path} is not in a Jellyfin library, importing new items into the movie and series folders and moving nothing",
+                catalogCfg.Name,
+                catalogCfg.Path
+            );
+        }
+
+        // A catalog's folder takes the kind its library is for: movies in a shows library, or the
+        // other way round, are not listed by it. A mixed library takes both. The other kind goes
+        // to its default folder, as for a catalog without a folder.
+        var seriesFolder =
+            catalogFolder is not null && manager.LibraryTakes(catalogFolder, BaseItemKind.Series)
+                ? catalogFolder
+                : cfg.SeriesFolder;
+        var movieFolder =
+            catalogFolder is not null && manager.LibraryTakes(catalogFolder, BaseItemKind.Movie)
+                ? catalogFolder
+                : cfg.MovieFolder;
+        var leaveAlone = GetFoldersToLeaveAlone(cfg, catalogFolder);
 
         if (seriesFolder is null)
         {
@@ -54,7 +128,7 @@ public class CatalogImportService(
             logger.LogWarning("No movie root folder found");
         }
 
-        var maxItems = catalogCfg.MaxItems;
+        var maxItems = catalogCfg.GetMaxItems(cfg.CatalogMaxItems);
 
         var stopwatch = Stopwatch.StartNew();
         var outcome = "failed";
@@ -71,6 +145,7 @@ public class CatalogImportService(
             var processedItems = 0;
             var created = 0;
             var existing = 0;
+            var moved = 0;
             var skipped = 0;
             var failed = 0;
             // keyed on stremio meta.Id to deduplicate within the import run
@@ -142,6 +217,16 @@ public class CatalogImportService(
                                         Interlocked.Increment(
                                             ref isNew ? ref created : ref existing
                                         );
+
+                                        if (
+                                            !isNew
+                                            && !folderMissing
+                                            && await MoveIntoAsync(item, root, leaveAlone, innerCt)
+                                                .ConfigureAwait(false)
+                                        )
+                                        {
+                                            Interlocked.Increment(ref moved);
+                                        }
                                     }
                                     else
                                     {
@@ -183,11 +268,12 @@ public class CatalogImportService(
 
             // Skipped: listed twice in the catalog, or a type without a library folder.
             logger.LogInformation(
-                "{Id}: processed {Count} items: {Created} new, {Existing} already in the library, {Skipped} skipped, {Failed} failed",
+                "{Id}: processed {Count} items: {Created} new, {Existing} already in the library ({Moved} moved into the catalog's folder), {Skipped} skipped, {Failed} failed",
                 catalogCfg.Id,
                 processedItems,
                 created,
                 existing,
+                moved,
                 skipped,
                 failed
             );
@@ -223,6 +309,80 @@ public class CatalogImportService(
             stopwatch.Elapsed.Seconds,
             stopwatch.Elapsed.TotalSeconds
         );
+    }
+
+    /// <summary>
+    /// Folders an item a catalog lists is not taken out of: the folder of another catalog, since the
+    /// first catalog to claim an item keeps it and two catalogs must not pass it back and forth,
+    /// and the per-user folders, whose items belong to that user. The movie and series folders are
+    /// not among them, and neither is a folder no catalog uses any more: an item there moves.
+    /// </summary>
+    private HashSet<Guid> GetFoldersToLeaveAlone(PluginConfiguration cfg, Folder? target)
+    {
+        var ids = manager.GetCatalogFolders(cfg).Select(f => f.Id).ToHashSet();
+
+        foreach (var user in cfg.UserConfigs)
+        {
+            var userCfg = GelatoPlugin.Instance!.GetConfig(user.UserId);
+            if (userCfg.MovieFolder is { } userMovies)
+                ids.Add(userMovies.Id);
+            if (userCfg.SeriesFolder is { } userSeries)
+                ids.Add(userSeries.Id);
+        }
+
+        if (target is not null)
+            ids.Remove(target.Id);
+        if (cfg.MovieFolder is { } movies)
+            ids.Remove(movies.Id);
+        if (cfg.SeriesFolder is { } series)
+            ids.Remove(series.Id);
+
+        return ids;
+    }
+
+    /// <summary>
+    /// Moves an item the catalog lists into the folder the catalog imports into, when it is
+    /// somewhere else. Setting a catalog's folder, changing it or clearing it takes effect on
+    /// items imported before that on the next sync. Only Gelato's own placeholders move: a local
+    /// file stays where the library put it.
+    /// </summary>
+    private async Task<bool> MoveIntoAsync(
+        BaseItem item,
+        Folder target,
+        HashSet<Guid> leaveAlone,
+        CancellationToken ct
+    )
+    {
+        if (
+            item is not (Movie or Series)
+            || item.ParentId == target.Id
+            || leaveAlone.Contains(item.ParentId)
+            || item.HasStreamTag()
+            || !(item.Path?.StartsWith("gelato://", StringComparison.OrdinalIgnoreCase) ?? false)
+        )
+        {
+            return false;
+        }
+
+        try
+        {
+            return await manager.MoveToFolderAsync(item, target, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Could not move {Name} ({Id}) into {Folder}",
+                item.Name,
+                item.Id,
+                target.Path
+            );
+            return false;
+        }
     }
 
     private async Task<BoxSet?> GetOrCreateBoxSetAsync(CatalogConfig config)
@@ -310,14 +470,15 @@ public class CatalogImportService(
             return;
         }
 
-        var total = enabled.Sum(c => c.MaxItems);
+        var globalMaxItems = GelatoPlugin.Instance!.Configuration.CatalogMaxItems;
+        var total = enabled.Sum(c => c.GetMaxItems(globalMaxItems));
         var offset = 0;
 
         foreach (var cat in enabled)
         {
             ct.ThrowIfCancellationRequested();
 
-            var catMax = cat.MaxItems;
+            var catMax = cat.GetMaxItems(globalMaxItems);
             var localOffset = offset;
             var catProgress = progress is null
                 ? null
