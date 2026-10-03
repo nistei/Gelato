@@ -52,6 +52,18 @@ def remote_status(t, path):
     return t.sh(f"curl -sL -o /dev/null -m 20 -w '%{{http_code}}' '{url}' || true").strip() or "unreachable"
 
 
+def row_with_poster(t):
+    """A stream row of a movie with a Primary image on record: the fixture movie's when it has one."""
+    movie = t.movie()
+    has_poster = lambda m: "Primary" in (t.api.item(m, fields="Path").get("ImageTags") or {})
+    if has_poster(movie):
+        return t.row(movie)
+    found = t.db.one(
+        "select lower(replace(r.Id,'-','')) from BaseItems r join BaseItemImageInfos i on i.ItemId=r.PrimaryVersionId "
+        "and i.ImageType=0 where r.Tags like '%gelato-stream%' order by random() limit 1")
+    return found[0] if found else None
+
+
 def render(t, item_id, image_type):
     st, _, body = t.api.request(f"/Items/{item_id}/Images/{TYPES[image_type]}?maxWidth={WIDTH}")
     return st, len(body)
@@ -100,7 +112,10 @@ def run(t):
 
     # Gelato's own two paths on top of the item images: a stream row hands out its movie's poster,
     # and a search result that is not in the library is proxied from the addon.
-    row = t.row()
+    # The movie's poster: a row of a movie that has one (prod has movies without, Tenet among them,
+    # and every row of such a movie answers 404 as the movie does).
+    row = row_with_poster(t)
+    t.require(row, "no stream row whose movie has a poster")
     st, size = render(t, row, 0)
     t.check(st == 200 and size > 0, f"a stream row's poster renders: {st}, {size} bytes")
 
