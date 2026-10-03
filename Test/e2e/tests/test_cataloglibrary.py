@@ -188,7 +188,7 @@ def run(t):
         api.delete(f"/Items/{victim}")
         t.equal(api.call("GET", f"/Items/{victim}?userId={api.user}")[0], 404, "a deleted movie is gone")
         t.equal(db.one("select count(*) from BaseItems where lower(replace(PrimaryVersionId,'-',''))=?", (victim,))[0], 0, "with its stream rows")
-        sync("after the delete")
+        t.check(t.import_catalog(movie_cat), "catalog import (after the delete) completed")
         back = db.one(f"select lower(replace(b.ParentId,'-','')) from BaseItems b join BaseItemProviders p on p.ItemId=b.Id "
                       f"and lower(p.ProviderId)='stremio' where {GELATO_MOVIE} and p.ProviderValue=?", (stremio,))
         t.check(back and back[0] == movies_f, "the next import brings it back into the catalog's library")
@@ -200,7 +200,8 @@ def run(t):
             left = [f for f in (folder_id(d) for d in dirs.values()) if f]
             if any(in_folder(GELATO_MOVIE, f) or in_folder(GELATO_SERIES, f) for f in left):
                 configure("", "")
-                api.run_task("GelatoCatalogItemsSync", timeout=1800)
+                t.import_catalog(movie_cat)
+                t.import_catalog(series_cat)
         finally:
             cfg.update(old)
             api.post(f"/Plugins/{GELATO}/Configuration", cfg)

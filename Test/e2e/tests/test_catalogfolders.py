@@ -37,7 +37,12 @@ def run(t):
         cfg["CatalogMaxItems"] = CATALOG_ITEMS
         api.post(f"/Plugins/{GELATO}/Configuration", cfg)
 
-    def sync(label):
+    def sync(label, only=None):
+        """The scheduled task, or with `only` that catalog's own import: the same import, without
+        the library scan the task queues after the catalogs."""
+        if only:
+            t.check(t.import_catalog(only), f"catalog sync ({label}) completed")
+            return
         status, msg = api.run_task("GelatoCatalogItemsSync", timeout=1800)
         t.equal(status, "Completed", f"catalog sync ({label}) {msg}")
         t.settle(after=1, timeout=300)  # the scan the import queues
@@ -151,14 +156,14 @@ def run(t):
         # 2. A scan keeps them, a second sync moves nothing.
         scan()
         t.check(in_folder(GELATO_MOVIE, cat_movies) == moved_movies, "a library scan keeps the catalog folder's movies")
-        sync("folders unchanged")
+        sync("folders unchanged", only=movie_cat)
         t.check(in_folder(GELATO_MOVIE, cat_movies) == moved_movies, "a second sync leaves them where they are")
 
         # 3. A catalog folder that cannot be found (not in a library yet, or its disk is gone) must
         # not send the catalog's items back to the movie folder.
         t.sh("mkdir -p /tmp/gelato/in-no-library")
         configure("/tmp/gelato/in-no-library", SERIES_DIR)
-        sync("movie folder in no library")
+        sync("movie folder in no library", only=movie_cat)
         t.check(in_folder(GELATO_MOVIE, cat_movies) == moved_movies, "a folder in no library leaves the movies where they are")
         configure(MOVIE_DIR, SERIES_DIR)
 

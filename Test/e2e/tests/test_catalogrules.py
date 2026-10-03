@@ -49,9 +49,9 @@ def run(t):
         api.post(f"/Plugins/{GELATO}/Configuration", cfg)
 
     def sync(label):
-        status, msg = api.run_task("GelatoCatalogItemsSync", timeout=1800)
-        t.equal(status, "Completed", f"catalog sync ({label}) {msg}")
-        t.settle(after=1, timeout=300)  # the scan the import queues
+        # The first catalog is the only enabled one: its own import is what the task would run,
+        # without the library scan after it (test_catalogfolders runs the task).
+        t.check(t.import_catalog(first), f"catalog sync ({label}) completed")
 
     def open_from_search(user, movie):
         """Opens the title under the id a search result of the addon carries: what a client holds
@@ -156,7 +156,7 @@ def run(t):
             # Without the user's override its folder is nobody's, so the sync takes that movie too.
             cfg["UserConfigs"] = old["UserConfigs"]
             configure("", "")
-            api.run_task("GelatoCatalogItemsSync", timeout=1800)
+            t.import_catalog(first)
         finally:
             cfg.update(old)
             api.post(f"/Plugins/{GELATO}/Configuration", cfg)
