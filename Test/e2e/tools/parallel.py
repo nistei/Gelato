@@ -41,8 +41,11 @@ def main():
     p.add_argument("--adminpassword", default="")
     p.add_argument("--destructive", action="store_true")
     p.add_argument("--seed", type=int)
-    p.add_argument("extra", nargs="*")
-    args = p.parse_args()
+    # Split by hand: argparse gives everything after "--" to the instances, the extra list stayed empty.
+    argv = sys.argv[1:]
+    cut = argv.index("--") if "--" in argv else len(argv)
+    args = p.parse_args(argv[:cut])
+    args.extra = argv[cut + 1:]
     args.instances = expand(args.instances)
     print("instances: " + " ".join(args.instances))
     os.makedirs(os.path.join(HERE, ".cache"), exist_ok=True)
