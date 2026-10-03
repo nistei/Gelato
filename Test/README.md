@@ -98,6 +98,36 @@ def run(t):
 - Tests talk to the server only through the API, as a client would, and read the database to check what the API
   does not show. Never write to the database.
 
+### Keeping a test fast
+
+A slow test is almost always waiting, not working: the catalog tests spent about 10 s in their calls and
+90 s in sleeps and scans. Before adding a test, and when one takes more than about 30 s:
+
+- **No fixed sleeps.** After anything that leaves background work behind (a task, a scan, a refresh, an item
+  update) call `t.settle(after=1)`: it returns once no task runs and the database files stopped changing.
+  `time.sleep(5)` followed by `api.wait_tasks_idle(...)` costs 5 s plus a 3 s poll every time; keep
+  `wait_tasks_idle` only as the check after the settle.
+- **Poll the thing you wait for** (a search hit, a database row, a log line) every 0.2 to 0.5 s with a timeout,
+  instead of sleeping its worst case. `t.sh` and `t.db` cost milliseconds.
+- **A new library folder: `t.folders_ready(path, ...)`.** Gelato memoizes its folder lookup for 10 s, misses too.
+  The helper waits for the folder items, the scan, and only what is left of the 10 s since the folders appeared.
+  `t.wait(12)` after the scan waited the memo a second time.
+- **Count the library scans.** One takes about 9 s on a prod copy and the test has to wait for it. The
+  `GelatoCatalogItemsSync` task queues one after the catalogs, `POST /gelato/libraries/{id}/folder` one for a new
+  folder, `POST /Library/Refresh` is one. Adding or removing a library with `refreshLibrary=false` queues none.
+- **A catalog import: `t.import_catalog(catalog)`.** It runs the one catalog's import as its Import button does,
+  without the scan. Run the task only where the task or the scan after it is what the test is about
+  (`test_tasks`, `test_catalogfolders`, the collection in `test_cataloglibrary`).
+- **Import few items.** Every title the library does not have costs a metadata fetch and a refresh: 20 new movies
+  took 145 s on a fresh instance. 5 to 8 per catalog are enough.
+- **Clean up without leaving work behind.** A scan or task started in a `finally` is paid by the next test as
+  idle wait.
+- **Measure.** The run's summary lists the slowest tests as `test s / idle wait s / other`; a large idle wait
+  belongs to the test before it. `python tools/timing.py <run.py arguments>` runs the same and prints where the
+  time went: sleeps by caller, tasks, settles, HTTP calls by path.
+- **Give the test its weight.** Add its seconds to `jfapi/weights.json`. An unlisted test counts as the average
+  (about 20 s), and one shard of a parallel run ends up minutes longer than the others.
+
 ### Gelato in the database
 
 - Ids are GUIDs with dashes in the database and without in the API: compare with `norm()`.
