@@ -152,8 +152,12 @@ class Api:
         return self.get(f"/Items/{item_id}?userId={self.user}{q}")
 
     def sources(self, item_id):
-        """Ids of the item's media sources as this user sees them."""
-        return [s["Id"] for s in self.item(item_id).get("MediaSources") or []]
+        """Ids of the item's media sources as this user sees them. Asked with a field list: Gelato
+        takes an item request without one (or with MediaSources) for a page visit and pre-probes
+        the default stream in the background, and a helper that only wants the ids set off probes
+        that saved rows under later checks (fixture picks open up to 12 movies). Jellyfin's item
+        endpoint answers with every field anyway, and syncs the streams the same."""
+        return [s["Id"] for s in self.item(item_id, fields="Path").get("MediaSources") or []]
 
     def user_data(self, item_id):
         d = self.get(f"/UserItems/{item_id}/UserData?userId={self.user}")
