@@ -31,7 +31,12 @@ def run(t):
                      f"&paths={lookalike.replace('/', '%2F')}&refreshLibrary=false", {"LibraryOptions": {"EnableRealtimeMonitor": False}})
         lib_id = library(LIB)["ItemId"]
 
-        # The base path as the settings page saves it: whatever was typed.
+        # The settings page asks for the libraries with the folder that was typed before it saves
+        # it: a relative one is refused there, with the reason.
+        st, reason = api.call("GET", "/gelato/libraries?basePath=gelato-relative")
+        t.equal(st, 400, f"the library list refuses a relative base path it is asked with ({str(reason)[:60]})")
+
+        # One that was saved all the same (an earlier version saved whatever was typed).
         api.post(f"/Plugins/{GELATO}/Configuration", {**cfg, "BasePath": "gelato-relative"})
         t.equal(api.call("GET", "/gelato/libraries")[0], 200, "the library list is answered with a relative base path saved")
         st, _ = api.call("GET", f"/Items?userId={api.user}&parentId={lib_id}&searchTerm=heretic&IncludeItemTypes=Movie&Recursive=true&Limit=5")
