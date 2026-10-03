@@ -136,8 +136,10 @@ A slow test is almost always waiting, not working: the catalog tests spent about
 - **Give a library-wide task a small library.** A task that walks a library (subtitle download, trickplay,
   chapter images) costs per item, and on a prod copy the Gelato library has thousands. Where the task is switched
   per library, make one of your own, put one movie and one short series into it (the second user's per-user
-  folders, opened from search: `test_subs`) and switch the task off on the others for the run. `subs` went from
-  86 to 530 s down to 47 s that way, and stopped failing on a slow addon.
+  folders, opened from search: `test_subs`) and switch the task off on the others for the run. The four task
+  runs of `subs` went from one to eight minutes down to 5 to 22 s that way, and stopped failing on a slow addon.
+- **A PlaybackInfo that names a stream row probes it.** A remote stream that was never probed costs up to a
+  minute, a dead one the whole minute and no sources. Ask for as few rows as the check needs.
 - **Import few items.** Every title the library does not have costs a metadata fetch and a refresh: 20 new movies
   took 145 s on a fresh instance. 5 to 8 per catalog are enough.
 - **Clean up without leaving work behind.** A scan or task started in a `finally` is paid by the next test as
