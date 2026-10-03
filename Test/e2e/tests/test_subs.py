@@ -178,8 +178,11 @@ def check_saved(t, saved):
         t.check(st == 200, f"PlaybackInfo answers ({st})")
         if st != 200:
             return
-        src = next((s for s in pi.get("MediaSources", []) if norm(s["Id"]) == row), None)
+        sources = pi.get("MediaSources", [])
+        src = next((s for s in sources if norm(s["Id"]) == row), None)
         if src is None:
+            # No sources at all is a stream that could not be probed (a dead link), after a minute.
+            t.log(f"row {row[:8]} is not among the {len(sources)} sources of {owner[:8]}")
             continue
         ext = [m for m in src.get("MediaStreams", []) if m.get("Type") == "Subtitle" and m.get("IsExternal")]
         t.check(ext, f"PlaybackInfo offers the saved subtitle on row {row[:8]}: {[(m.get('Language'), m.get('Codec')) for m in ext]}")
