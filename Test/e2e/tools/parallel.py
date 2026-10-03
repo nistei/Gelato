@@ -1,8 +1,10 @@
 """Runs the suite as shards, one per instance, at the same time.
 
-    python tools/parallel.py --adminuser nistei --destructive jf-prodrun:8097 jf-prodrun2:8098 jf-prodrun3:8099
+    python tools/parallel.py --adminuser nistei --destructive jf-playback-1:8112 jf-playback-2:8113
+    python tools/parallel.py --adminuser nistei --destructive jf-playback-*      # every running jf-playback-N
 
-Each argument is `container:port` of an instance built from the same dump. Shard I of N goes to the
+Each argument is `container:port` of an instance built from the same dump, or a container alone (its published
+port is looked up), or `name-*` for every running container `name-<number>`. Shard I of N goes to the
 Ith instance (`run.py --shard I/N`, split by jfapi/weights.json), the output of each into
 `.cache/shard-<I>.txt`. Extra arguments after `--` go to every run.py. Exit code 1 if any shard failed.
 """
@@ -17,15 +19,32 @@ import time
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def expand(instances):
+    """container:port for each argument: a port looked up when missing, `name-*` for the running name-N in order."""
+    sys.path.insert(0, HERE)
+    from run import container_url
+    out = []
+    for inst in instances:
+        if inst.endswith("-*"):
+            names = subprocess.run(["docker", "ps", "--format", "{{.Names}}", "--filter", f"name=^{inst[:-1]}[0-9]+$"],
+                                   capture_output=True, text=True).stdout.split()
+            out += sorted(names, key=lambda n: int(n.rsplit("-", 1)[1]))
+        else:
+            out.append(inst)
+    return [i if ":" in i else f"{i}:{container_url(i).rsplit(':', 1)[1]}" for i in out]
+
+
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("instances", nargs="+", help="container:port")
+    p.add_argument("instances", nargs="+", help="container:port, container, or name-* (see above)")
     p.add_argument("--adminuser", default="admin")
     p.add_argument("--adminpassword", default="")
     p.add_argument("--destructive", action="store_true")
     p.add_argument("--seed", type=int)
     p.add_argument("extra", nargs="*")
     args = p.parse_args()
+    args.instances = expand(args.instances)
+    print("instances: " + " ".join(args.instances))
     os.makedirs(os.path.join(HERE, ".cache"), exist_ok=True)
     t0, procs = time.time(), []
     for i, inst in enumerate(args.instances, 1):

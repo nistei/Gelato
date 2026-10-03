@@ -66,6 +66,14 @@ def preflight(api, db, selected):
     return ok
 
 
+def container_url(container):
+    """http://localhost:<port> for the port the container publishes Jellyfin's 8096 on."""
+    import subprocess
+    r = subprocess.run(["docker", "port", container, "8096/tcp"], capture_output=True, text=True)
+    ports = [line.rsplit(":", 1)[-1] for line in r.stdout.split() if ":" in line] if r.returncode == 0 else []
+    return f"http://localhost:{ports[0]}" if ports else "http://localhost:8096"
+
+
 def load_weights():
     """Seconds per test: the committed jfapi/weights.json, overlaid with what tools/parallel.py measured on this
     machine (.cache/weights.json), so the shards stay even as tests grow or slow down."""
@@ -97,8 +105,8 @@ def main():
     p = argparse.ArgumentParser(description="Gelato checks against a Jellyfin instance", formatter_class=argparse.RawDescriptionHelpFormatter,
                                 epilog=__doc__.split("\n", 1)[1])
     p.add_argument("tests", nargs="*", help="test names (prefixes work), or 'list'")
-    p.add_argument("--container", default=os.environ.get("JF_CONTAINER", "jf-tests"), help="Docker container of the instance, its database is copied out for the checks (default jf-tests, the compose file's)")
-    p.add_argument("--url", default=os.environ.get("JF_URL", "http://localhost:8096"), help="server URL (default http://localhost:8096)")
+    p.add_argument("--container", default=os.environ.get("JF_CONTAINER", "jf-tests"), help="Docker container of the instance, its database is read for the checks (default jf-tests, the README's docker run)")
+    p.add_argument("--url", default=os.environ.get("JF_URL"), help="server URL (default: the container's published port on localhost, else http://localhost:8096)")
     p.add_argument("--adminuser", default=os.environ.get("JF_ADMINUSER", "admin"), help="administrator (default admin)")
     p.add_argument("--adminpassword", default=os.environ.get("JF_ADMINPASSWORD", ""), help="the administrator's password (default empty)")
     p.add_argument("--addon-url", default=os.environ.get("JF_ADDON_URL"), help="the Stremio addon URL, needed to set up an empty instance (wizard, Gelato config, libraries, a small catalog import)")
@@ -114,6 +122,7 @@ def main():
                    "(jfapi/weights.json), each shard on its own instance, see tools/parallel.py")
     p.add_argument("--no-rerun", action="store_true", help="do not run failed tests again alone")
     args = p.parse_args()
+    args.url = args.url or container_url(args.container)
 
     os.environ.setdefault("PYTHONUTF8", "1")
     # UTF-8: names and paths in the notes carry non-ASCII characters, and printing one to a
