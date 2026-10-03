@@ -116,6 +116,10 @@ class Fixtures:
             "and e.ParentIndexNumber=1 and (e.Tags is null or e.Tags not like ?) and e.SeriesId=s.Id) >= ? "
             # short series only: the tests that mark or delete episodes get slow on a long one
             "and (select count(*) from BaseItems e where e.Type like '%TV.Episode' and e.SeriesId=s.Id) <= 60 "
+            # no shorts: Jellyfin keeps no resume point for an episode under 5 minutes and marks it played at
+            # the first progress report (MinResumeDurationSeconds), which failed nextup on a series of 4-minute ones
+            "and not exists (select 1 from BaseItems e where e.Type like '%TV.Episode' and e.SeriesId=s.Id "
+            "and e.ParentIndexNumber=1 and e.RunTimeTicks between 1 and 5999999999) "
             # nothing watched by the user yet: Next Up would start after the last watched episode
             "and not exists (select 1 from UserData u join BaseItems e on e.Id=u.ItemId where e.SeriesId=s.Id "
             "and u.Played=1 and lower(replace(u.UserId,'-',''))=?) "
