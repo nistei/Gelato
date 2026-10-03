@@ -3,7 +3,6 @@ DESTRUCTIVE = True  # changes the plugin configuration, adds two libraries, rest
 
 import re
 import subprocess
-import time
 import urllib.parse
 
 from jfapi import bootstrap
@@ -52,8 +51,7 @@ def run(t):
     def sync(label):
         status, msg = api.run_task("GelatoCatalogItemsSync", timeout=1800)
         t.equal(status, "Completed", f"catalog sync ({label}) {msg}")
-        time.sleep(5)
-        api.wait_tasks_idle("RefreshLibrary", 1800)
+        t.settle(after=1, timeout=300)  # the scan the import queues
 
     def plays(item, label):
         """Streams are offered and the stream endpoint delivers. Returns (runtime, source id)."""
@@ -77,13 +75,12 @@ def run(t):
                 added.append(name)
             dirs[name] = api.post(f"/gelato/libraries/{library(name)['ItemId']}/folder")["Path"]
         configure(dirs[MOVIE_LIB], dirs[SERIES_LIB])
-        time.sleep(5)
+        t.folders_ready(*dirs.values())
         t.check(api.wait_tasks_idle("RefreshLibrary", 1800), "the scan the folders queued finished")
         movies_f, series_f = folder_id(dirs[MOVIE_LIB]), folder_id(dirs[SERIES_LIB])
         t.check(movies_f and series_f, "both libraries have their Gelato folder")
         if not (movies_f and series_f):
             return
-        t.wait(12)  # Gelato memoizes its folder lookup for 10 s
         sync("libraries picked")
         movie_lib, series_lib = library(MOVIE_LIB)["ItemId"], library(SERIES_LIB)["ItemId"]
         movies, series = in_folder(GELATO_MOVIE, movies_f), in_folder(GELATO_SERIES, series_f)
@@ -168,7 +165,7 @@ def run(t):
                                   "and (e.Tags is null or e.Tags not like '%gelato-stream%') and lower(replace(a.ParentItemId,'-',''))=?", (show,))[0]
         before = (in_folder(GELATO_MOVIE, movies_f), in_folder(GELATO_SERIES, series_f), episodes())
         api.post("/Library/Refresh")
-        time.sleep(5)
+        t.settle(after=1, timeout=300)
         t.check(api.wait_tasks_idle("RefreshLibrary", 1800), "library scan finished")
         t.check((in_folder(GELATO_MOVIE, movies_f), in_folder(GELATO_SERIES, series_f)) == before[:2], "a library scan keeps both libraries' items")
         t.check(episodes() >= before[2], f"and the series' episodes ({before[2]})")

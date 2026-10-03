@@ -1,8 +1,6 @@
 DESCRIPTION = "A catalog's library only takes the kind it is for: a movie catalog that picked a shows library keeps its movies in the movies library, and a catalog without its own item limit uses the global one (adds a library, removed again)"
 DESTRUCTIVE = True  # changes the plugin configuration, adds a library, runs the catalog import
 
-import time
-
 from jfapi.bootstrap import GELATO, MOVIE_PATH
 
 LIB = "Kinds shows jfapi"
@@ -38,18 +36,16 @@ def run(t):
         cfg["Catalogs"] = [{**cat, "Enabled": True, "MaxItems": 0, "Path": path}]
         cfg["CatalogMaxItems"] = LIMIT
         api.post(f"/Plugins/{GELATO}/Configuration", cfg)
-        time.sleep(5)
+        t.folders_ready(path)
         t.check(api.wait_tasks_idle("RefreshLibrary", 1800), "the scan the folder queued finished")
         shows = folder_id(path)
         t.check(shows, "the shows library's folder exists")
-        t.wait(12)  # Gelato memoizes its folder lookup for 10 s
         movies = folder_id(cfg.get("MoviePath") or MOVIE_PATH)
         before = movies_in(movies)
 
         status, msg = api.run_task("GelatoCatalogItemsSync", timeout=1800)
         t.equal(status, "Completed", f"catalog sync {msg}")
-        time.sleep(5)
-        api.wait_tasks_idle("RefreshLibrary", 1800)
+        t.settle(after=1, timeout=300)  # the scan the import queues
         line = t.sh("grep -h ': processed ' /config/log/*.log | tail -1").strip()
         t.log(line[-170:])
         t.check(f"processed {LIMIT} items" in line, f"a catalog without a limit of its own imports the global {LIMIT}")

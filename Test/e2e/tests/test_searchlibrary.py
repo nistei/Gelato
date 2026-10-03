@@ -2,7 +2,6 @@ DESCRIPTION = "Default libraries: with other movies and series libraries picked,
 DESTRUCTIVE = True  # changes the plugin's default folders for the run and adds two libraries
 
 import re
-import time
 
 from jfapi.bootstrap import GELATO
 
@@ -56,10 +55,9 @@ def run(t):
         series_dir = api.post(f"/gelato/libraries/{library(SERIES_LIB)['ItemId']}/folder")["Path"]
         cfg.update({"MoviePath": movie_dir, "SeriesPath": series_dir})
         api.post(f"/Plugins/{GELATO}/Configuration", cfg)
-        time.sleep(5)
+        t.folders_ready(movie_dir, series_dir)
         t.check(api.wait_tasks_idle("RefreshLibrary", 1800), "the scan the folders queued finished")
         t.check(folder_id(movie_dir) and folder_id(series_dir), "both folders are in the library")
-        t.wait(12)  # Gelato memoizes its folder lookup for 10 s
 
         # A title the library has already: opening it from search leaves it in the old folder.
         known = t.movie()

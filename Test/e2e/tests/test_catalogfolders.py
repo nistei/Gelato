@@ -1,8 +1,6 @@
 DESCRIPTION = "Catalog libraries: Gelato adds its folder to a picked library, a movie and a series catalog picking one move their items there on sync, watch state kept, and back when cleared (adds two libraries and scans)"
 DESTRUCTIVE = True  # changes the plugin configuration, adds two libraries, runs the catalog import and a scan
 
-import time
-
 from jfapi.api import search_result_id
 from jfapi.bootstrap import CATALOG_ITEMS, GELATO, MOVIE_PATH, SERIES_ITEMS, SERIES_PATH
 
@@ -42,12 +40,11 @@ def run(t):
     def sync(label):
         status, msg = api.run_task("GelatoCatalogItemsSync", timeout=1800)
         t.equal(status, "Completed", f"catalog sync ({label}) {msg}")
-        time.sleep(5)
-        api.wait_tasks_idle("RefreshLibrary", 1800)
+        t.settle(after=1, timeout=300)  # the scan the import queues
 
     def scan():
         api.post("/Library/Refresh")
-        time.sleep(5)
+        t.settle(after=1, timeout=300)
         t.check(api.wait_tasks_idle("RefreshLibrary", 1800), "library scan finished")
 
     def duplicates():
@@ -112,13 +109,12 @@ def run(t):
         t.check(MOVIE_DIR != SERIES_DIR, "each library gets a folder of its own")
         t.equal(MOVIE_DIR.rsplit("/", 1)[-1], "catalog-movies-jfapi", "the folder is named after the library, lowercase without spaces")
         configure(MOVIE_DIR, SERIES_DIR)
-        time.sleep(5)
+        t.folders_ready(MOVIE_DIR, SERIES_DIR)  # the seeding request saw no folder yet
         t.check(api.wait_tasks_idle("RefreshLibrary", 1800), "the scan the folder queued finished")
         cat_movies, cat_series = folder_id(MOVIE_DIR), folder_id(SERIES_DIR)
         t.check(cat_movies and cat_series, "the folder items of both catalog folders exist")
         if not (cat_movies and cat_series):
             return
-        t.wait(12)  # Gelato memoizes its folder lookup for 10 s; the seeding request saw no folder yet
         def_movies, def_series = folder_id(default_movies), folder_id(default_series)
 
         before_movies = in_folder(GELATO_MOVIE, def_movies)
@@ -190,8 +186,7 @@ def run(t):
             dto = api.get(f"/Items/{sid}?userId={api.user}")
             if dto.get("Status") != "Continuing":  # the tree sync takes continuing series
                 api.post(f"/Items/{sid}", {**dto, "Status": "Continuing"})
-        time.sleep(5)
-        api.wait_tasks_idle("RefreshLibrary", 1800)
+        t.settle(after=1, timeout=300)
         status, msg = api.run_task("SyncSeriesTrees", timeout=1800)
         t.equal(status, "Completed", f"series tree sync {msg}")
         t.check(in_folder(GELATO_SERIES, cat_series) == moved_series, "the tree sync leaves a series in the folder it is in")

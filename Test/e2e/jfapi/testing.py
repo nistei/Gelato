@@ -19,6 +19,7 @@ from .api import Api, ApiError
 from .fixtures import Fixtures
 
 SECOND_USER = "jfapi-second"
+FOLDER_MEMO_SECONDS = 10  # GelatoManager.FolderCacheTtl
 
 
 class Skip(Exception):
@@ -113,6 +114,25 @@ class Context:
         task's or a refresh's background writes."""
         time.sleep(after)
         return quiesce(self.api, self.db, lambda m: self.log(m), timeout)
+
+    def folders_ready(self, *paths, timeout=180):
+        """Waits for the scan queued for new library folders, and until Gelato sees the folders.
+        Gelato memoizes its folder lookup for 10 s, misses too, so a request from before the scan
+        can still answer "no folder". That has run out 10 s after the folder items appeared, which
+        is mostly over by the time the scan ends: a fixed sleep after the scan waited it twice.
+        True when every folder item exists."""
+        t0, seen = time.time(), None
+        while seen is None and time.time() - t0 < min(timeout, 60):
+            self.db.invalidate()
+            if all(self.db.one("select count(*) from BaseItems where Path=? and Type like '%.Folder'", (p,))[0] for p in paths):
+                seen = time.time()
+            else:
+                time.sleep(0.5)
+        self.settle(after=0.5, timeout=timeout)
+        if seen is None:
+            return False
+        time.sleep(max(0.0, FOLDER_MEMO_SECONDS + 0.5 - (time.time() - seen)))
+        return True
 
 
 def make_user2(api, name=SECOND_USER, on_call=None):
