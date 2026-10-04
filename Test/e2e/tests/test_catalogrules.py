@@ -1,4 +1,4 @@
-DESCRIPTION = "Catalog moves keep to their rules: an item in another catalog's library or in a user's own folder stays there, and movies opened while a sync moves them keep their stream rows with them (adds libraries, removed again)"
+DESCRIPTION = "Catalog moves keep to their rules: an item in a user's own folder stays there, a catalog's movies follow it out of a library another catalog got, and movies opened while a sync moves them keep their stream rows with them (adds libraries, removed again)"
 DESTRUCTIVE = True  # changes the plugin configuration and a user's access, adds libraries, runs the catalog import
 
 import threading
@@ -103,9 +103,9 @@ def run(t):
         api.post(f"/Users/{u2.user}/Policy", policy)
         policy = None
 
-        # 3. The second catalog has a library too, and some of the first catalog's movies are in it
-        # (the first catalog put them there while it had that library). The first catalog picks
-        # another library: what is in the second catalog's library and in the user's folder stays.
+        # 3. The first catalog's movies are in a library the second catalog then gets, while the
+        # first one picks another: they are the first catalog's (test_catalogown has the marks), so
+        # they follow it out of there. What is in the user's folder stays.
         configure(dirs[LIB_B], "")
         sync("first catalog fills the other library")
         theirs = in_folder(b)
@@ -117,13 +117,6 @@ def run(t):
         for movie in opened:
             api.sources(movie)
         configure(dirs[LIB_A], dirs[LIB_B])
-        sync("the second catalog's library is taken")
-        t.check(in_folder(b) == theirs, "a catalog leaves what is in another catalog's library")
-        t.equal(parent_of(mine), own, "and what is in a user's folder")
-
-        # 4. The second catalog gives its library up: now the first catalog's sync moves the movies,
-        # while they are being opened.
-        configure(dirs[LIB_A], "")
         stop = threading.Event()
 
         def keep_opening():
@@ -138,7 +131,8 @@ def run(t):
         finally:
             stop.set()
             thread.join(60)
-        t.check(theirs <= in_folder(a), "the movies moved into the first catalog's library")
+        t.check(theirs <= in_folder(a), "a catalog's movies follow it out of a library another catalog got")
+        t.equal(parent_of(mine), own, "what is in a user's folder stays there")
         for movie in opened:
             api.sources(movie)
             rows = rows_of(movie)
