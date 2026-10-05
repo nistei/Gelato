@@ -26,11 +26,12 @@ class Skip(Exception):
 
 
 class Context:
-    def __init__(self, api, db, fixtures, user2_factory, verbose=False):
+    def __init__(self, api, db, fixtures, user2_factory, verbose=False, sink=None):
         self.api, self.db, self.fixtures = api, db, fixtures
         self._user2_factory = user2_factory
         self._user2 = None
         self.verbose = verbose
+        self.sink = sink  # takes the notes -v would have printed (the run's file)
         self.lines, self.failures, self.passed = [], [], 0
         self.known_failures = []
 
@@ -41,6 +42,8 @@ class Context:
         self.lines.append(line)
         if self.verbose:
             print("      " + line)
+        elif self.sink:
+            self.sink("      " + line)
 
     def check(self, condition, message):
         if condition:
@@ -147,6 +150,10 @@ def quiesce(api, db, log, timeout=180):
             running = [t["Name"] for t in api.get("/ScheduledTasks") if t.get("State") != "Idle"]
         except ApiError:
             running = []
+        except OSError:
+            # No answer at all: a test restarted the server, or took it down. That is not idle, and
+            # raising here ended the whole run without a summary instead of failing the next test.
+            running = ["the server does not answer"]
         now = db.db_stat()
         if not running and now == last:
             return time.time() - t0

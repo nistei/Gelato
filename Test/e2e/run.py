@@ -4,6 +4,7 @@
     python run.py --container <name>                 # every non-destructive test, server on http://localhost:8096
     python run.py --container <name> --url http://host:8096 --adminuser admin --adminpassword secret
     python run.py --container <name> play nextup -v  # some tests, with their notes
+    python run.py --container <name> search          # every test whose name starts with it
     python run.py --container <name> --destructive   # also the tests that reconfigure the instance
     python run.py list                               # what there is
     python run.py --container <name> play --movie <id> --row <id>   # explicit items instead of picks
@@ -23,6 +24,8 @@ How a run keeps its results comparable:
   it (--full-catalogs keeps them): two tests run the import as configured, and on a copy of a real
   instance the refresh of hundreds of new items keeps every later test waiting.
 - A check for a documented open bug ends as KNOWN; a missing prerequisite (artwork, a plugin) skips.
+- The whole output, with every test's notes, is kept in `.cache/run-<container>.txt` whatever -v says
+  and wherever stdout goes.
 
 Environment variables stand in for the options: JF_CONTAINER, JF_URL, JF_ADMINUSER, JF_ADMINPASSWORD,
 JF_ADDON_URL. An empty instance (wizard not completed, or Gelato without addon URL and libraries)
@@ -46,6 +49,44 @@ from jfapi.api import Api  # noqa: E402
 from jfapi.db import Db  # noqa: E402
 from jfapi.fixtures import Fixtures  # noqa: E402
 from jfapi.testing import SECOND_USER, Context, load_tests, make_user2, quiesce, run_test  # noqa: E402
+
+
+class RunLog:
+    """stdout plus the run's own record, .cache/run-<container>.txt. The file gets every test's notes
+    whether or not -v shows them, so a run that was piped through `tail`, or run without -v, still
+    leaves its failure blocks behind: a 16-minute run had to be repeated twice for want of them."""
+
+    def __init__(self, console, path):
+        self.console, self.path = console, path
+        self.file = open(path, "w", encoding="utf-8", errors="replace", buffering=1)
+        self.console_only = False  # what is printed now is in the file already
+
+    def write(self, text):
+        self.console.write(text)
+        if not self.console_only:
+            self.file.write(text)
+
+    def note(self, line):
+        """A line for the file alone."""
+        self.file.write(line + "\n")
+
+    def flush(self):
+        self.console.flush()
+        self.file.flush()
+
+
+def select(tests, wanted, destructive):
+    """[(name, module)] for the names asked for, in run order. A name that is a test selects that test
+    alone (`play` is not also playlist, playsubs and playbackonce), any other one every test it starts."""
+    selected = []
+    for name, mod in tests.items():
+        if wanted:
+            if not any(name == x or (x not in tests and name.startswith(x)) for x in wanted):
+                continue
+        elif getattr(mod, "DESTRUCTIVE", False) and not destructive:
+            continue
+        selected.append((name, mod))
+    return selected
 
 
 def preflight(api, db, selected):
@@ -107,7 +148,7 @@ def shard(selected, index, count):
 def main():
     p = argparse.ArgumentParser(description="Gelato checks against a Jellyfin instance", formatter_class=argparse.RawDescriptionHelpFormatter,
                                 epilog=__doc__.split("\n", 1)[1])
-    p.add_argument("tests", nargs="*", help="test names (prefixes work), or 'list'")
+    p.add_argument("tests", nargs="*", help="test names, or 'list'; a name that is no test stands for every test starting with it")
     p.add_argument("--container", default=os.environ.get("JF_CONTAINER", "jf-tests"), help="Docker container of the instance, its database is read for the checks (default jf-tests, the README's docker run)")
     p.add_argument("--url", default=os.environ.get("JF_URL"), help="server URL (default: the container's published port on localhost, else http://localhost:8096)")
     p.add_argument("--adminuser", default=os.environ.get("JF_ADMINUSER", "admin"), help="administrator (default admin)")
@@ -142,14 +183,7 @@ def main():
         print("--container (or JF_CONTAINER) is required: the checks read the instance's database")
         return 2
 
-    selected = []
-    for name, mod in tests.items():
-        if args.tests:
-            if not any(name.startswith(x) for x in args.tests):
-                continue
-        elif getattr(mod, "DESTRUCTIVE", False) and not args.destructive:
-            continue
-        selected.append((name, mod))
+    selected = select(tests, args.tests, args.destructive)
     if args.shard:
         selected = shard(selected, *map(int, args.shard.split("/")))
     unknown = [x for x in args.tests if not any(n.startswith(x) for n in tests)]
@@ -157,6 +191,8 @@ def main():
         print("unknown tests:", ", ".join(unknown), "(see 'list')")
         return 2
 
+    os.makedirs(os.path.join(HERE, ".cache"), exist_ok=True)
+    sys.stdout = RunLog(sys.stdout, os.path.join(HERE, ".cache", f"run-{args.container}.txt"))
     say = lambda m: print("  " + m)
     info = bootstrap.wait_ready(args.url, say)
     if info is None:
@@ -221,41 +257,47 @@ def run_one(args, api, db, fixtures, name, mod, seed, scope, label):
     t_start = time.time()
     waited = quiesce(api, db, lambda m: print("      " + m))
     db.reseed(seed, scope)
-    ctx = Context(api, db, fixtures.for_test(scope), make_user2(api, on_call=db.invalidate), verbose=args.verbose)
+    ctx = Context(api, db, fixtures.for_test(scope), make_user2(api, on_call=db.invalidate), verbose=args.verbose,
+                  sink=getattr(sys.stdout, "note", None))
     note = f"  (waited {waited:.0f}s for the server)" if waited >= 5 else ""
     print(f"{label} {name:12} {mod.DESCRIPTION}{note}")
     status, seconds = run_test(name, mod, ctx)
     print(f"           -> {status} ({ctx.passed} check(s) passed, {len(ctx.failures)} failed, {seconds:.0f}s)")
     TIMINGS.append((name, seconds, waited, time.time() - t_start - seconds - waited))
-    if status in ("FAIL", "ERROR") and not args.verbose:
+    if not args.verbose:  # the notes that explain the verdict; the run's file has them all already
+        sys.stdout.console_only = True
         for line in ctx.lines:
-            print("      " + line)
-    if status in ("SKIP", "KNOWN") and not args.verbose:
-        for line in ctx.lines:
-            if line.startswith(("skipped", "KNOWN")):
+            if status in ("FAIL", "ERROR") or (status in ("SKIP", "KNOWN") and line.startswith(("skipped", "KNOWN"))):
                 print("      " + line)
+        sys.stdout.console_only = False
     return status, ctx
 
 
 def run_selected(args, api, db, fixtures, selected, seed):
     results, known = {}, []
     t0 = time.time()
-    for i, (name, mod) in enumerate(selected, 1):
-        status, ctx = run_one(args, api, db, fixtures, name, mod, seed, name, f"[{i:2}/{len(selected)}]")
-        results[name] = status
-        known += [(name, m, r) for m, r in ctx.known_failures]
-        if status in ("FAIL", "ERROR") and args.exitfirst:
-            break
+    interrupted = False
+    try:
+        for i, (name, mod) in enumerate(selected, 1):
+            status, ctx = run_one(args, api, db, fixtures, name, mod, seed, name, f"[{i:2}/{len(selected)}]")
+            results[name] = status
+            known += [(name, m, r) for m, r in ctx.known_failures]
+            if status in ("FAIL", "ERROR") and args.exitfirst:
+                break
 
-    # A failure in a run is not yet a finding: the tests before it churned the library. Once more
-    # alone, on items nobody touched, tells a bug from interference.
-    failed = [(n, m) for n, m in selected if results.get(n) in ("FAIL", "ERROR")]
-    if failed and not args.no_rerun and not args.exitfirst and len(selected) > 1:
-        print(f"\n== {len(failed)} failed test(s) once more, alone")
-        for name, mod in failed:
-            status, _ = run_one(args, api, db, fixtures, name, mod, seed, f"{name} (alone)", "[alone]")
-            if status in ("ok", "KNOWN"):
-                results[name] = "flaky"
+        # A failure in a run is not yet a finding: the tests before it churned the library. Once more
+        # alone, on items nobody touched, tells a bug from interference.
+        failed = [(n, m) for n, m in selected if results.get(n) in ("FAIL", "ERROR")]
+        if failed and not args.no_rerun and not args.exitfirst and len(selected) > 1:
+            print(f"\n== {len(failed)} failed test(s) once more, alone")
+            for name, mod in failed:
+                status, _ = run_one(args, api, db, fixtures, name, mod, seed, f"{name} (alone)", "[alone]")
+                if status in ("ok", "KNOWN"):
+                    results[name] = "flaky"
+    except KeyboardInterrupt:
+        # What ran so far is still worth its summary.
+        interrupted = True
+        print(f"\n== interrupted after {len(results)} of {len(selected)} test(s)")
 
     if TIMINGS:
         print("\n  slowest tests (test s / idle wait s / other harness s):")
@@ -273,7 +315,8 @@ def run_selected(args, api, db, fixtures, selected, seed):
             print(f"  flaky: {name} (failed in the run, passed alone)")
     for name, message, record in known:
         print(f"  known: {name}: {message} [{record}]")
-    return 1 if counts["FAIL"] or counts["ERROR"] else 0
+    print(f"  output with every test's notes: {sys.stdout.path}")
+    return 130 if interrupted else 1 if counts["FAIL"] or counts["ERROR"] else 0
 
 
 if __name__ == "__main__":

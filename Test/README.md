@@ -41,7 +41,8 @@ The destructive tests reconfigure the instance, so use a throwaway instance or a
 python Test/e2e/run.py --container <name>                  
 python Test/e2e/run.py --container <name> --url http://host:8096 --adminuser admin --adminpassword secret
 
-# Some tests, verbose
+# Some tests, verbose. A name that is a test runs that test alone (play is not also playlist);
+# any other name stands for every test starting with it (search)
 python Test/e2e/run.py --container <name> play nextup -v
 
 # Also the tests that reconfigure the instance and are destructive
@@ -50,6 +51,9 @@ python Test/e2e/run.py --container <name> --destructive
 # Explicit items instead of automatic picks
 python Test/e2e/run.py --container <name> play --movie <id> --row <id>
 ```
+
+Every run keeps its whole output, with every test's notes, in `Test/e2e/.cache/run-<container>.txt`,
+whatever `-v` says and wherever stdout went: read a failure there instead of running again.
 
 ## Test structure for agents
 
