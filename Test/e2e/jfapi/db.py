@@ -1,8 +1,8 @@
 """Queries against the instance's database, read in place by a sidecar container.
 
-The sidecar (`<container>-sql`, `python:3-slim` with `--volumes-from` the instance) runs one Python
-process that answers a query per line on stdin, against the live `jellyfin.db`. SQLite in WAL mode
-lets it read next to Jellyfin, and a query takes milliseconds. Before, every check copied the whole
+The sidecar (`<container>-sql`, `python:3-slim` with `--volumes-from` the instance) is one Python
+process that answers a query per line on stdin, against the live `jellyfin.db`, and ends with the
+run. SQLite in WAL mode lets it read next to Jellyfin, and a query takes milliseconds. Before, every check copied the whole
 database out of the container (`docker cp` and `backup()`), 500 MB on a copy of prod, several times
 per test: that was most of a run's time. `connect()` opens a read transaction in the sidecar, which
 sees one consistent state until it is closed, as the copy did.
@@ -26,6 +26,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 import threading
 import time
 
@@ -78,15 +79,23 @@ class Sidecar:
         self.name = f"{container}-sql"
         self.lock = threading.Lock()
         subprocess.run(["docker", "rm", "-f", self.name], capture_output=True)
-        r = subprocess.run(["docker", "run", "-d", "--name", self.name, "--volumes-from", container,
-                            SIDECAR_IMAGE, "sleep", "infinity"], capture_output=True, text=True)
-        if r.returncode != 0:
-            raise RuntimeError(r.stderr.strip() or "docker run failed")
-        self.proc = subprocess.Popen(["docker", "exec", "-i", self.name, "python", "-u", "-c", SIDECAR_SCRIPT],
-                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        # The script is the container's own process, on our pipe, and the container is --rm: when
+        # this run ends, however it ends, the script reads the end of its input and the container
+        # goes with it. As a `sleep infinity` container with the script exec'ed into it, a killed
+        # run left it behind, holding the instance's volumes against a cleanup.
+        self.errors = tempfile.TemporaryFile()
+        self.proc = subprocess.Popen(["docker", "run", "-i", "--rm", "--name", self.name, "--volumes-from", container,
+                                      SIDECAR_IMAGE, "python", "-u", "-c", SIDECAR_SCRIPT],
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.errors,
                                      text=True, encoding="utf-8")
         atexit.register(self.close)
-        self.ask({"op": "q", "sql": "select 1"})
+        try:
+            self.ask({"op": "q", "sql": "select 1"})
+        except (sqlite3.DatabaseError, OSError):
+            self.errors.seek(0)
+            said = self.errors.read().decode("utf-8", errors="replace").strip().splitlines()
+            self.close()
+            raise RuntimeError(said[-1] if said else "docker run failed")
 
     def ask(self, request):
         with self.lock:
