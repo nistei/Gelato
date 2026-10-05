@@ -39,6 +39,7 @@ import json
 import os
 import random
 import sys
+import threading
 import time
 import urllib.request
 
@@ -237,6 +238,53 @@ def main():
 TIMINGS = []  # (test, seconds in the test, seconds waiting for an idle server, other harness seconds)
 
 
+class ClockWatch(threading.Thread):
+    """Compares the server's clock with this machine's every two seconds, for as long as the run lasts.
+
+    Under Docker Desktop the container runs on a VM's clock, and that one was seen running 4.9 % fast
+    and being set back by 1.5 s every half minute. Whatever the server times by its clock (a cache
+    window, "synced a moment ago") then sees time run backwards: a sync was skipped that way and
+    failed a test that passed alone. A failed test is told when that happened during it."""
+
+    SET_BACK = 0.3  # seconds behind the last look: set back, not merely slow
+
+    def __init__(self, db):
+        super().__init__(daemon=True)
+        self.db, self.steps, self.rates = db, [], []  # steps: (when, seconds set back)
+
+    def run(self):
+        last = at = None
+        while True:
+            try:
+                offset, now = self.db.clock_offset(), time.time()
+            except Exception:
+                return
+            if offset is None:
+                return
+            if last is not None:
+                if last - offset > self.SET_BACK:
+                    self.steps.append((now, last - offset))
+                else:
+                    self.rates.append((offset - last) / (now - at))
+            last, at = offset, now
+            time.sleep(2)
+
+    def during(self, t0, t1):
+        return [seconds for when, seconds in self.steps if t0 <= when <= t1 + 2]
+
+    def summary(self):
+        """A line for the run's end when the clock is not to be trusted, else None."""
+        rate = 100 * sum(self.rates) / len(self.rates) if self.rates else 0.0
+        if not self.steps and abs(rate) < 0.5:
+            return None
+        return (f"the server's clock ran {abs(rate):.1f} % {'fast' if rate > 0 else 'slow'} against this machine's and was set back "
+                f"{len(self.steps)} time(s), by up to {max((s for _, s in self.steps), default=0):.1f} s: "
+                "a failure that passes alone may be that (see Environment in Test/README.md)")
+
+
+CLOCK = None  # the run's ClockWatch
+
+
 def run_one(args, api, db, fixtures, name, mod, seed, scope, label):
     """Waits for an idle server, then runs one test with its own seeded picks."""
     t_start = time.time()
@@ -246,8 +294,12 @@ def run_one(args, api, db, fixtures, name, mod, seed, scope, label):
                   sink=getattr(sys.stdout, "note", None))
     note = f"  (waited {waited:.0f}s for the server)" if waited >= 5 else ""
     print(f"{label} {name:12} {mod.DESCRIPTION}{note}")
+    began = time.time()
     status, seconds = run_test(name, mod, ctx)
     print(f"           -> {status} ({ctx.passed} check(s) passed, {len(ctx.failures)} failed, {seconds:.0f}s)")
+    steps = CLOCK.during(began, time.time()) if CLOCK and status in ("FAIL", "ERROR") else []
+    if steps:
+        print(f"      note: the server's clock was set back {len(steps)} time(s) during this test, by up to {max(steps):.1f} s")
     TIMINGS.append((name, seconds, waited, time.time() - t_start - seconds - waited))
     if not args.verbose:  # the notes that explain the verdict; the run's file has them all already
         sys.stdout.console_only = True
@@ -286,6 +338,9 @@ def shared_queue(url, worker, selected):
 
 
 def run_selected(args, api, db, fixtures, selected, seed):
+    global CLOCK
+    CLOCK = ClockWatch(db)
+    CLOCK.start()
     results, known = {}, []
     t0 = time.time()
     interrupted, again = False, set()
@@ -323,6 +378,8 @@ def run_selected(args, api, db, fixtures, selected, seed):
             print(f"    {n:14} {sec:6.1f} {w:6.1f} {o:6.1f}")
         print(f"  total: tests {sum(x[1] for x in TIMINGS):.0f}s, idle wait {sum(x[2] for x in TIMINGS):.0f}s, "
               f"other {sum(x[3] for x in TIMINGS):.0f}s")
+    if CLOCK and CLOCK.summary():
+        print("  " + CLOCK.summary())
     counts = {s: sum(1 for st in results.values() if st == s) for s in ("ok", "FAIL", "ERROR", "flaky", "KNOWN", "SKIP")}
     print(f"\n{counts['ok']} passed, {counts['FAIL']} failed, {counts['ERROR']} errored, {counts['flaky']} flaky, "
           f"{counts['KNOWN']} known, {counts['SKIP']} skipped in {time.time() - t0:.0f}s (seed {seed})")

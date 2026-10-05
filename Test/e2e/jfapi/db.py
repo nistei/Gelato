@@ -56,6 +56,9 @@ for line in sys.stdin:
             import os
             out = {"stat": [[f, os.stat("/config/data/" + f).st_size, os.stat("/config/data/" + f).st_mtime_ns]
                             for f in ("jellyfin.db", "jellyfin.db-wal", "jellyfin.db-shm") if os.path.exists("/config/data/" + f)]}
+        elif r["op"] == "now":
+            import time
+            out = {"now": time.time()}
         elif r["op"] == "close":
             c = cons.pop(r["con"], None)
             if c is not None:
@@ -293,6 +296,16 @@ class Db:
         if self.sidecar is not None:
             return self.sidecar.ask({"op": "stat"})["stat"]
         return self.sh("stat -c '%n %s %y' /config/data/jellyfin.db* 2>/dev/null")
+
+    def clock_offset(self):
+        """Seconds the container's clock is ahead of this machine's, None without the sidecar. The
+        two share one kernel under Docker Desktop, yet the VM's clock was seen running 4.9 % fast
+        and being set back by 1.5 s every half minute: see run.py's ClockWatch."""
+        if self.sidecar is None:
+            return None
+        t0 = time.time()
+        now = self.sidecar.ask({"op": "now"})["now"]
+        return now - (t0 + time.time()) / 2
 
     # ---- Gelato specifics
 
