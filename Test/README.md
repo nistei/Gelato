@@ -120,8 +120,8 @@ A slow test is almost always waiting, not working: the catalog tests spent about
 
 - **No fixed sleeps.** After anything that leaves background work behind (a task, a scan, a refresh, an item
   update) call `t.settle(after=1)`: it returns once no task runs and the database files stopped changing.
-  `time.sleep(5)` followed by `api.wait_tasks_idle(...)` costs 5 s plus a 3 s poll every time; keep
-  `wait_tasks_idle` only as the check after the settle.
+  `time.sleep(5)` followed by `api.wait_tasks_idle(...)` costs the 5 s every time; keep `wait_tasks_idle`
+  only as the check after the settle.
 - **Poll the thing you wait for** (a search hit, a database row, a log line) every 0.2 to 0.5 s with a timeout,
   instead of sleeping its worst case. `t.sh` and `t.db` cost milliseconds.
 - **A new library folder: `t.folders_ready(path, ...)`.** Gelato memoizes its folder lookup for 10 s, misses too.
@@ -147,8 +147,9 @@ A slow test is almost always waiting, not working: the catalog tests spent about
 - **Measure.** The run's summary lists the slowest tests as `test s / idle wait s / other`; a large idle wait
   belongs to the test before it. `python tools/timing.py <run.py arguments>` runs the same and prints where the
   time went: sleeps by caller, tasks, settles, HTTP calls by path.
-- **Give the test its weight.** Add its seconds to `jfapi/weights.json`. An unlisted test counts as the average
-  (about 20 s), and one shard of a parallel run ends up minutes longer than the others.
+- **Give the test its weight.** Add its seconds to `jfapi/weights.json`. A parallel run hands the tests out as
+  the instances get free, but it plans its end (the longest of the last tests first, `purgeall` in time) by the
+  weights, and an unlisted test counts as the average (about 20 s).
 
 ### Gelato in the database
 
