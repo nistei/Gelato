@@ -40,6 +40,7 @@ import os
 import random
 import sys
 import time
+import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -120,7 +121,7 @@ def container_url(container):
 
 def load_weights():
     """Seconds per test: the committed jfapi/weights.json, overlaid with what tools/parallel.py measured on this
-    machine (.cache/weights.json), so the shards stay even as tests grow or slow down."""
+    machine (.cache/weights.json). The queue of a parallel run plans its end with them."""
     with open(os.path.join(HERE, "jfapi", "weights.json"), encoding="utf-8") as h:
         weights = json.load(h)
     try:
@@ -129,20 +130,6 @@ def load_weights():
     except (OSError, ValueError):
         pass
     return weights
-
-
-def shard(selected, index, count):
-    """Shard `index` of `count` (1-based): the longest tests first onto the lightest shard, then back
-    in run order. Every shard computes the same split from the same weights."""
-    weights = load_weights()
-    default = sum(weights.values()) / max(len(weights), 1)
-    load, mine = [0.0] * count, set()
-    for name, _ in sorted(selected, key=lambda x: -weights.get(x[0], default)):
-        i = load.index(min(load))
-        load[i] += weights.get(name, default)
-        if i == index - 1:
-            mine.add(name)
-    return [(n, m) for n, m in selected if n in mine]
 
 
 def main():
@@ -162,8 +149,8 @@ def main():
     p.add_argument("--seed", type=int, default=None, help="seed for the picks (default: a new one, printed)")
     p.add_argument("--addon", choices=("replay", "live", "refresh"), default="replay",
                    help="replay: catalogs and metas from the recording, streams live (default); live: the addon for everything; refresh: record anew")
-    p.add_argument("--shard", metavar="I/N", help="run only shard I of N (1-based): the selected tests split by their typical duration "
-                   "(jfapi/weights.json), each shard on its own instance, see tools/parallel.py")
+    p.add_argument("--queue", metavar="URL", help="take the tests one at a time from tools/parallel.py, which hands the selected ones "
+                   "out to all its instances (set by parallel.py)")
     p.add_argument("--no-rerun", action="store_true", help="do not run failed tests again alone")
     p.add_argument("--full-catalogs", action="store_true", help="import the catalogs with their configured limits instead of a handful of items each")
     args = p.parse_args()
@@ -184,8 +171,6 @@ def main():
         return 2
 
     selected = select(tests, args.tests, args.destructive)
-    if args.shard:
-        selected = shard(selected, *map(int, args.shard.split("/")))
     unknown = [x for x in args.tests if not any(n.startswith(x) for n in tests)]
     if unknown:
         print("unknown tests:", ", ".join(unknown), "(see 'list')")
@@ -273,27 +258,60 @@ def run_one(args, api, db, fixtures, name, mod, seed, scope, label):
     return status, ctx
 
 
+def in_order(selected):
+    """The selected tests one after the other: (label, name, module)."""
+    for i, (name, mod) in enumerate(selected, 1):
+        yield f"[{i:2}/{len(selected)}]", name, mod
+
+
+def shared_queue(url, worker, selected):
+    """The tests tools/parallel.py hands this instance, one at a time until it has none left for it:
+    every instance of the run draws from the same list, so none sits idle while another still has
+    minutes of tests ahead of it. A test with `LAST = True` is the last one an instance gets."""
+    def ask(path, body):
+        req = urllib.request.Request(url + path, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read())
+
+    mods = dict(selected)
+    try:
+        ask("/tests", {"tests": [[n, bool(getattr(m, "LAST", False))] for n, m in selected]})
+        while True:
+            a = ask("/next", {"worker": worker})
+            if not a.get("test"):
+                return
+            yield a["label"], a["test"], mods[a["test"]]
+    except OSError as e:
+        print(f"  the queue at {url} does not answer ({e}): stopping here")
+
+
 def run_selected(args, api, db, fixtures, selected, seed):
     results, known = {}, []
     t0 = time.time()
-    interrupted = False
+    interrupted, again = False, set()
+
+    def rerun_failed():
+        # A failure in a run is not yet a finding: the tests before it churned the library. Once more
+        # alone, on items nobody touched, tells a bug from interference.
+        failed = [(n, m) for n, m in selected if results.get(n) in ("FAIL", "ERROR") and n not in again]
+        if failed and not args.no_rerun and not args.exitfirst and len(selected) > 1:
+            print(f"\n== {len(failed)} failed test(s) once more, alone")
+            for name, mod in failed:
+                again.add(name)
+                status, _ = run_one(args, api, db, fixtures, name, mod, seed, f"{name} (alone)", "[alone]")
+                if status in ("ok", "KNOWN"):
+                    results[name] = "flaky"
+
     try:
-        for i, (name, mod) in enumerate(selected, 1):
-            status, ctx = run_one(args, api, db, fixtures, name, mod, seed, name, f"[{i:2}/{len(selected)}]")
+        for label, name, mod in shared_queue(args.queue, args.container, selected) if args.queue else in_order(selected):
+            if getattr(mod, "LAST", False):
+                rerun_failed()  # it leaves no library to run them on
+            status, ctx = run_one(args, api, db, fixtures, name, mod, seed, name, label)
             results[name] = status
             known += [(name, m, r) for m, r in ctx.known_failures]
             if status in ("FAIL", "ERROR") and args.exitfirst:
                 break
-
-        # A failure in a run is not yet a finding: the tests before it churned the library. Once more
-        # alone, on items nobody touched, tells a bug from interference.
-        failed = [(n, m) for n, m in selected if results.get(n) in ("FAIL", "ERROR")]
-        if failed and not args.no_rerun and not args.exitfirst and len(selected) > 1:
-            print(f"\n== {len(failed)} failed test(s) once more, alone")
-            for name, mod in failed:
-                status, _ = run_one(args, api, db, fixtures, name, mod, seed, f"{name} (alone)", "[alone]")
-                if status in ("ok", "KNOWN"):
-                    results[name] = "flaky"
+        rerun_failed()
     except KeyboardInterrupt:
         # What ran so far is still worth its summary.
         interrupted = True

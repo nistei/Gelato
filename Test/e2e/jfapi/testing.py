@@ -1,6 +1,8 @@
 """The test harness: a context with the API, database, fixtures and checks, and the runner loop.
 
-A test is a module in tests/ with `DESCRIPTION`, an optional `DESTRUCTIVE = True`, and `run(t)`. It
+A test is a module in tests/ with `DESCRIPTION`, an optional `DESTRUCTIVE = True`, an optional
+`LAST = True` (it leaves the instance unfit for other tests: nothing runs after it there, and the
+failed tests are run again before it), and `run(t)`. It
 observes through `t.api` / `t.db`, asks `t.movie()` and friends for items, and records verdicts
 with `t.check(condition, "what should hold")`. `t.skip("why")` leaves the test out, `t.log()`
 keeps notes that are shown on failure or with -v.

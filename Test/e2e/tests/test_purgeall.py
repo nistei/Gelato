@@ -1,5 +1,6 @@
 DESCRIPTION = "Purge all Gelato items: every Gelato item and stream row goes, watch state is cleared, not parked, and a catalog import brings the library back"
 DESTRUCTIVE = True  # deletes every Gelato item of the instance, then imports the catalogs again
+LAST = True  # what it leaves is a handful of items per catalog: no test after it on the same instance
 
 from jfapi.db import STREAM_TAG, norm
 

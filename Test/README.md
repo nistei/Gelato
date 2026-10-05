@@ -55,6 +55,12 @@ python Test/e2e/run.py --container <name> play --movie <id> --row <id>
 Every run keeps its whole output, with every test's notes, in `Test/e2e/.cache/run-<container>.txt`,
 whatever `-v` says and wherever stdout went: read a failure there instead of running again.
 
+`python Test/e2e/tools/parallel.py --adminuser <user> --destructive <container> <container> ...` runs the suite
+on several instances at the same time (instances built from the same state): each takes its next test from one
+shared queue, so the run takes the suite's time divided by the instances whatever a single test does. It prints
+each test's verdict as it comes in, and at the end the notes of every failed or flaky test and the totals; each
+instance's full output is in `.cache/shard-<n>.txt`.
+
 ## Test structure for agents
 
 Everything lives in `Test/e2e`. `run.py` puts that folder on `sys.path`, so imports are `from jfapi...`.
@@ -94,6 +100,8 @@ def run(t):
   `t.unsynced_movie()`, `t.row(movie)` (a non-first stream row), `t.series()`, `t.episodes(series, season)` give items.
 - `t.check` and `t.equal` record a verdict and go on; the test fails if any failed. An exception makes it ERROR.
   `t.skip("why")` for a missing prerequisite (e.g. the Webhook plugin).
+- `LAST = True` for a test that leaves the instance unfit for the others (`purgeall`): nothing runs after it on
+  its instance, and the failed tests get their second run before it.
 - Add the name to `ORDER` in `jfapi/testing.py`; unlisted tests run last, alphabetically. Cheap read-only tests go
   first, the ones that delete, split or scan go late, so a broken instance shows up in the early ones.
 - Leave the items as found (mark unplayed, re-insert what was deleted): the fixtures are shared across tests
