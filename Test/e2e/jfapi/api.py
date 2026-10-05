@@ -216,7 +216,7 @@ class Api:
         while time.time() - t0 < timeout:
             if self.task(key)["State"] == "Idle":
                 return True
-            time.sleep(3)
+            time.sleep(0.5)
         return False
 
     def users(self):

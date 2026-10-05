@@ -72,6 +72,13 @@ class AddonRecorder:
         self.server = ThreadingHTTPServer(("0.0.0.0", 0), Handler)
         self.port = self.server.server_address[1]
         self.log_file, self._log_lock = os.path.join(CACHE, f"addon-proxy-{self.port}.log"), threading.Lock()
+        for f in os.listdir(CACHE):  # one per run and port: they piled up by the dozen
+            old = os.path.join(CACHE, f)
+            if f.startswith("addon-proxy-") and f.endswith(".log") and time.time() - os.path.getmtime(old) > 3 * 86400:
+                try:
+                    os.remove(old)
+                except OSError:
+                    pass
         self.url = f"http://{PROXY_HOST}:{self.port}/manifest.json"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
