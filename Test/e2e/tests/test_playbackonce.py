@@ -1,22 +1,25 @@
-DESCRIPTION = "starting a playback prepares its source once for PlaybackInfo and once for the HLS playlists: the variant playlist reuses the master's answer for 10 seconds, another version is prepared on its own, and the player reloading the item does not pre-probe the source it plays"
-DESTRUCTIVE = True  # without Gelato's Debug lines, sets Gelato to Debug in logging.json and restarts, both ways
+DESCRIPTION = "starting a playback prepares its source once for PlaybackInfo and once for the HLS playlists: the variant playlist reuses the master's answer for 10 seconds from the end of its preparation, also when a first probe makes that take longer than the 10 seconds, another version is prepared on its own, and the player reloading the item does not pre-probe the source it plays"
+DESTRUCTIVE = True  # points Gelato's addon at a stub on the host for the slow first probe, then restores and resyncs; without Gelato's Debug lines, sets Gelato to Debug in logging.json and restarts, both ways
 
 # Counts Gelato's Debug lines. Instances from dev/jf.py log Gelato at Debug; elsewhere the test sets it in
 # logging.json and restarts the server, since Jellyfin applies a changed level only on a restart.
 
 import base64
 import json
+import re
 import subprocess
 import time
 import uuid
 
-from jfapi.bootstrap import wait_ready
-from tests.test_remuxdb import dashed
+from jfapi.bootstrap import GELATO, wait_ready
+from tests.test_remuxdb import Stub, by_name, dashed, make_clip
 
 LOGGING = "/config/config/logging.json"
 SHARED_FOR = 10  # seconds a prepared source answers the streaming requests that follow it
 DEVICE = "jfapi-playbackonce"
 FLUSH = 3  # seconds the log file may lag behind
+SLOW = SHARED_FOR + 2  # seconds the stub holds back a clip's first answer, which is the probe's
+CLIP_SECONDS = 150  # over the 2 minutes below which playback always probes
 
 
 def count(t, pattern):
@@ -44,6 +47,68 @@ def restart(t):
     subprocess.run(["docker", "restart", t.db.container], capture_output=True)
     t.require(wait_ready(t.api.base, t.log) is not None, f"{t.api.base} is back after the restart")
     t.api.ensure()
+
+
+def slow_stub(upstream, clip):
+    """The addon with every clip's first request answered only after SLOW seconds."""
+    stub = Stub(upstream, clip, clip)
+    handler, held = stub.server.RequestHandlerClass, set()
+    serve = handler.serve_clip
+
+    def serve_slowly(self, data):
+        with stub.lock:
+            first = self.path not in held
+            held.add(self.path)
+        if first:
+            time.sleep(SLOW)
+        return serve(self, data)
+
+    handler.serve_clip = serve_slowly
+    return stub
+
+
+def slow_first_probe(t, movie, playlist, state):
+    """A version nobody probed yet is probed by its master playlist, and that can take longer than
+    the 10 seconds its answer is shared for: a variant playlist that came 11.3 s after its master
+    prepared the source again while the 10 seconds counted from the start of the preparation."""
+    cfg_path = "/Plugins/" + GELATO + "/Configuration"
+    original = t.api.get(cfg_path)
+    imdb = t.fixtures.stremio_id(movie) or ""
+    if not original.get("Url") or not re.fullmatch(r"tt\d+", imdb):
+        return t.log(f"no addon URL or no IMDb Stremio id for the fixture movie ({imdb}): the slow first probe is left out")
+    clip = make_clip(t, CLIP_SECONDS, "128x72", 2)
+    t.require(clip, "ffmpeg in the container could not make the test clip")
+    stub = slow_stub(original["Url"], clip)
+    restore = {k: original[k] for k in ("Url", "PreProbe") if k in original}
+    try:
+        if "ok" not in t.sh(f"curl -s -m 5 -o /dev/null {stub.base}/reachable && echo ok"):  # a 404, not a held clip
+            return t.log(f"the container cannot reach the host on port {stub.port}: the slow first probe is left out")
+
+        # No RemuxDB data for the stub's streams: each needs a probe. Nothing is probed ahead.
+        streams = [{"name": f"once-{k}", "description": f"Test.PlaybackOnce.{k}.mkv", "url": f"{stub.base}/clip/{k}.mkv",
+                    "behaviorHints": {"bingeGroup": f"once-{k}", "filename": f"Test.PlaybackOnce.{k}.mkv"}} for k in "AB"]
+        stub.streams[f"/stream/movie/{imdb}.json"] = streams
+        t.api.post(cfg_path, {**original, "Url": f"{stub.base}/addon/manifest.json", **({"PreProbe": False} if "PreProbe" in original else {})})
+        cold = by_name(t.api.item(movie)).get("once-B")
+        t.require(cold, "the movie lists the stub's streams")
+
+        before = settled(lambda: state(cold))
+        started = time.time()
+        st_m, _ = playlist("master", cold)
+        took = time.time() - started
+        st_v, _ = playlist("main", cold)
+        t.equal((st_m, st_v), (200, 200), "the playlists of a version nobody probed yet answer")
+        t.check(took > SHARED_FOR, f"its master playlist takes longer than the {SHARED_FOR} seconds ({took:.1f} s)")
+        after = settled(lambda: state(cold))
+        t.equal((after[0] - before[0], after[1] - before[1]), (1, 0),
+                "the variant playlist does not prepare it again, however long the master took")
+        t.check(after[2] - before[2] >= 1, "it takes the master's answer")
+    finally:
+        t.api.post(cfg_path, {**t.api.get(cfg_path), **restore})
+        t.api.call("GET", f"/Items/{movie}?userId={t.api.user}", timeout=90)
+        stub.close()
+        left = t.db.one("select count(*) from BaseItems where Path like ?", (f"%host.docker.internal:{stub.port}%",))[0]
+        t.equal(left, 0, "no stub row is left after the real streams are synced again")
 
 
 def run(t):
@@ -123,6 +188,8 @@ def run(t):
         st, _ = playlist("master", first)
         t.equal((st, settled(lambda: fresh(first, "GetMasterHlsVideoPlaylist")) - m), (200, 1),
                 f"after {SHARED_FOR} seconds the source is prepared again")
+
+        slow_first_probe(t, movie, playlist, state)
     finally:
         t.api.call("DELETE", f"/Videos/ActiveEncodings?deviceId={DEVICE}&playSessionId={play_session}")
         if changed:
