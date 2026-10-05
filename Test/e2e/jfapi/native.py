@@ -100,6 +100,18 @@ def season_numbers(t, series_id):
     return sorted(s.get("IndexNumber") for s in t.api.get(f"/Shows/{series_id}/Seasons?userId={t.api.user}").get("Items", []))
 
 
+def listed_episodes(t, series_id):
+    """Ids of the episodes a client is shown for the series."""
+    return {e["Id"].lower() for e in t.api.get(f"/Shows/{series_id}/Episodes?userId={t.api.user}").get("Items", [])}
+
+
+def local_episodes_of(t, series_id):
+    """Ids of the series' own episodes in the database: the ones on a file."""
+    return {r[0] for r in t.db.query(
+        "select lower(replace(Id,'-','')) from BaseItems where Type like '%TV.Episode' and lower(replace(SeriesId,'-',''))=? "
+        "and Path like '/%'", (series_id,))}
+
+
 def open_local_series(t, series_id, local_episodes=1, timeout=120):
     """Opens the series page, which extends the tree when the option is on, and returns the episode
     tree once it stopped growing (or after the timeout).
@@ -109,17 +121,24 @@ def open_local_series(t, series_id, local_episodes=1, timeout=120):
     counts as an entry of its own next to the Gelato episode of the same slot and a snapshot taken
     then holds one entry more than the finished tree (seen as a 81 -> 80 "the scan removed an
     episode" failure). The tree counts as settled when it is past the local episodes, has no entry
-    without numbers, and two polls agree on its size."""
+    without numbers, lists the local episodes themselves and the season of every episode, and two
+    polls agree on its size. Without the local episodes a snapshot was taken while the local season
+    was not listed at all (73 episodes in seasons 0 and 2 to 5, twice in a row, of a tree that had 80
+    with season 1 a moment later); without the seasons one with all 80 episodes and no season 5."""
     t.api.item(series_id)
     t0, size = time.time(), None
     while time.time() - t0 < timeout:
         tree = episode_tree(t, series_id)
-        settled = len(tree) > local_episodes and all(s is not None and e is not None for s, e in tree)
+        local = local_episodes_of(t, series_id)
+        settled = (len(tree) > local_episodes and all(s is not None and e is not None for s, e in tree)
+                   and len(local) >= local_episodes and local <= listed_episodes(t, series_id)
+                   and {s for s, _ in tree} <= set(season_numbers(t, series_id)))
         if settled and len(tree) == size:
             return tree
         size = len(tree) if settled else None
-        # Until the server stopped writing, not a fixed 3 s: the tree is saved in the background.
-        t.settle(after=1, timeout=10)
+        # Until the server stopped writing, but no longer than a few seconds: the tree is saved in the
+        # background, and so are the refreshes of its eighty new episodes, for half a minute.
+        t.settle(after=1, timeout=3)
     return episode_tree(t, series_id)
 
 
