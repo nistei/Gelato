@@ -63,7 +63,7 @@ def run(t):
         if not ms:
             return 0, None
         st, _, body = api.request(f"/Videos/{item}/stream?static=true&mediaSourceId={ms[0]['Id']}", {"Range": "bytes=0-0"}, max_bytes=1)
-        t.check(st in (200, 206) and len(body) == 1, f"{label}: the stream delivers bytes ({st})")
+        t.delivers(st, body, ms[0]["Id"], f"{label}: the stream delivers bytes ({st})")
         return api.item(item).get("RunTimeTicks") or 0, (srcs[1]["Id"] if len(srcs) > 1 else srcs[0]["Id"])
 
     added, dirs, touched = [], {}, []
