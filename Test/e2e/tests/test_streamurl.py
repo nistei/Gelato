@@ -62,7 +62,7 @@ def run(t):
         # issue's own proof that masking did not break playback used the container form.
         for route in ("stream", "stream.mkv"):
             st, _, body = t.api.request(f"/Videos/{movie}/{route}?static=true&mediaSourceId={row}", {"Range": "bytes=0-0"}, max_bytes=1)
-            t.check(st in (200, 206) and len(body) == 1, f"/Videos/{{id}}/{route} still delivers bytes for the stubbed source ({st})")
+            t.delivers(st, body, row, f"/Videos/{{id}}/{route} still delivers bytes for the stubbed source ({st})")
         # A stream row is opened by its own id from a version page.
         st, _, body = t.api.request(f"/Videos/{row}/stream.mkv?static=true&mediaSourceId={row}", {"Range": "bytes=0-0"}, max_bytes=1)
-        t.check(st in (200, 206) and len(body) == 1, f"a stream row delivers bytes under its own id ({st})")
+        t.delivers(st, body, row, f"a stream row delivers bytes under its own id ({st})")

@@ -4,8 +4,11 @@ first PlaybackInfo on a row that has none to get more of them.
 Jellyfin's library tasks (trickplay, chapter images) only look at videos with media streams, so a
 test of what they do to Gelato's rows needs probed rows.
 """
+import urllib.error
+import urllib.request
+
 from .bootstrap import MOVIE_PATH
-from .db import STREAM_TAG
+from .db import STREAM_TAG, norm
 
 VIDEO = 1  # MediaStreamTypeEntity.Video
 
@@ -50,6 +53,39 @@ def ensure_probed(t, wanted=1, accept=lambda row: True, tries=6):
             if len(found) >= wanted:
                 break
     return found
+
+
+def reachable(url, timeout=60):
+    """The status of a one-byte range request straight at a stream's URL, which tells a dead debrid
+    link apart from a URL Jellyfin cannot fetch."""
+    req = urllib.request.Request(url, headers={"Range": "bytes=0-0", "User-Agent": "jfapi"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+    except Exception as e:  # name resolution, TLS, timeout
+        return type(e).__name__
+
+
+def urls_behind(t, source_id):
+    """The stream URLs a media source id can stand for: a row's own, or for a movie or episode the
+    rows it does not list by their own id (the one it publishes under the item's id is among them).
+    They carry the debrid key: never log them."""
+    sid = norm(source_id)
+    own = t.db.one("select Path from BaseItems where Tags like ? and lower(replace(Id,'-',''))=?", (STREAM_TAG, sid))
+    if own:
+        return [own[0]]
+    rows = dict(t.db.query("select lower(replace(Id,'-','')), Path from BaseItems where Tags like ? "
+                           "and lower(replace(PrimaryVersionId,'-',''))=?", (STREAM_TAG, sid)))
+    listed = {norm(s) for s in t.api.sources(sid)}
+    return [p for r, p in rows.items() if r not in listed] or list(rows.values())[:3]
+
+
+def dead_link(t, source_id):
+    """The statuses the source's own URLs answer with when none of them delivers, else None."""
+    statuses = [reachable(u, timeout=20) for u in urls_behind(t, source_id) if (u or "").startswith("http")]
+    return statuses if statuses and all(s not in (200, 206) for s in statuses) else None
 
 
 def movie_library(t):

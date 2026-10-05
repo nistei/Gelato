@@ -98,6 +98,9 @@ def run(t):
 
 - `t.api` is the admin, `t.user2` the second user (created on first use). `t.movie()`, `t.movie2()`, `t.movies(n)`,
   `t.unsynced_movie()`, `t.row(movie)` (a non-first stream row), `t.series()`, `t.episodes(series, season)` give items.
+- `t.delivers(status, body, source_id, "what")` for a check that a stream route answered with bytes: when it did
+  not and the stream's own URL does not answer either, the link is dead at the debrid service and the check is
+  noted, not failed.
 - `t.check` and `t.equal` record a verdict and go on; the test fails if any failed. An exception makes it ERROR.
   `t.skip("why")` for a missing prerequisite (e.g. the Webhook plugin).
 - `LAST = True` for a test that leaves the instance unfit for the others (`purgeall`): nothing runs after it on

@@ -59,6 +59,21 @@ class Context:
     def equal(self, actual, expected, message):
         return self.check(actual == expected, f"{message}: {actual!r}" + ("" if actual == expected else f", expected {expected!r}"))
 
+    def delivers(self, status, body, source_id, message):
+        """A check that a stream route answered with the stream's first byte (`body` None: the
+        status alone). When it did not, the stream's own URL is asked: a link that is dead at the
+        debrid service fails every route through Jellyfin and says nothing about Gelato, so the
+        check is noted and left out. Such a link failed a test about once in two runs of the
+        suite, each time with a second run of the test. True, False, or None for a dead link."""
+        if status in (200, 206) and (body is None or len(body) == 1):
+            return self.check(True, message)
+        from .probe import dead_link
+        dead = dead_link(self, source_id)
+        if dead:
+            self.log(f"not judged, the link is dead at the debrid service (its own URL answers {dead}): {message}")
+            return None
+        return self.check(False, message)
+
     def skip(self, reason):
         raise Skip(reason)
 

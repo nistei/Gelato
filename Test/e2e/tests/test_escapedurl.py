@@ -8,7 +8,7 @@ import urllib.request
 import uuid
 
 from jfapi.db import STREAM_TAG
-from jfapi.probe import probe
+from jfapi.probe import probe, reachable
 
 PLUGIN = "94ea4e14-8163-4989-96fe-0a2094bc2d6a"
 VIDEO = 1  # MediaStreamTypeEntity.Video
@@ -45,19 +45,6 @@ def stream_rows(t):
 def hashed(url):
     """The guid Gelato derives from a stream URL: MD5 of the URL, read the way .NET reads the bytes."""
     return str(uuid.UUID(bytes_le=hashlib.md5(url.encode()).digest()))
-
-
-def reachable(url):
-    """The status of a one-byte range request straight at the addon, which tells a dead debrid link
-    apart from a URL Jellyfin cannot fetch."""
-    req = urllib.request.Request(url, headers={"Range": "bytes=0-0", "User-Agent": "jfapi"})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            return r.status
-    except urllib.error.HTTPError as e:
-        return e.code
-    except Exception as e:  # name resolution, TLS, timeout
-        return type(e).__name__
 
 
 def addon_urls(t, stremio_id):

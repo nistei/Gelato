@@ -76,7 +76,7 @@ def run(t):
                 f"{label}: PlaybackInfo offers a source to play ({pi.get('ErrorCode')})")
         if ms:
             st, headers, body = t.api.request(f"/Videos/{item}/stream?static=true&mediaSourceId={ms[0]['Id']}", {"Range": "bytes=0-0"}, max_bytes=1)
-            t.check(st in (200, 206) and len(body) == 1, f"{label}: the stream endpoint delivers bytes right away ({st})")
+            t.delivers(st, body, ms[0]["Id"], f"{label}: the stream endpoint delivers bytes right away ({st})")
         runtime = t.api.item(item).get("RunTimeTicks") or 0
         row = srcs[1]["Id"] if len(srcs) > 1 else srcs[0]["Id"]
         t.api.report("start", item, row, 0, "insert")

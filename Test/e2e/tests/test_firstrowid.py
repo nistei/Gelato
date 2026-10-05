@@ -23,4 +23,4 @@ def run(t):
 
     # Controls: the row under its own id, and the item id as the source, both play.
     st, _, _ = t.api.request(f"/Videos/{row}/stream?static=true&mediaSourceId={row}", {"Range": "bytes=0-0"}, max_bytes=1)
-    t.check(st in (200, 206), f"the row opened under its own id plays ({st})")
+    t.delivers(st, None, row, f"the row opened under its own id plays ({st})")
