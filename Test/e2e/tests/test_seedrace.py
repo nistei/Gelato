@@ -16,7 +16,6 @@ SEED = "stub.txt"
 SEED_CONTENT = "This is a seed file created by Gelato so that library scans are triggered. Do not remove."
 CONFIG_ERROR = "Error getting config"  # GetConfig's catch: that caller got a blank configuration
 SHARING = "being used by another process"  # Windows: a second writer on the file the first holds open
-FOLDER_TTL = 11  # Gelato memoizes its folder lookup, and seeds only on a miss, for 10 s
 
 
 def server_log(container, since):
@@ -35,7 +34,11 @@ def run(t):
         for n in range(1, ROUNDS + 1):
             t.sh("rm -f " + " ".join(shlex.quote(s) for s in seeds))
             t.check(not t.sh("ls " + " ".join(shlex.quote(s) for s in seeds) + " 2>/dev/null").strip(), f"round {n}: seed files removed")
-            t.wait(FOLDER_TTL)  # every request of the round misses the folder cache and seeds
+            # Every request of the round has to miss the folder memo, since Gelato seeds only on a
+            # miss. Saving the configuration drops the memo at once (and the configuration memo with
+            # it, so the callers race for that too); waiting its 10 s out cost 44 s of the test's 49.
+            # That it was dropped shows below: the seed file is back after the round.
+            t.api.post(f"/Plugins/{GELATO}/Configuration", cfg)
 
             results, lock = [], threading.Lock()
             gate = threading.Event()
