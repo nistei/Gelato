@@ -1,23 +1,24 @@
-DESCRIPTION = "Adding a never-opened search result to a collection or a playlist: the title arrives, or the request fails; it is never a success that adds nothing"
+DESCRIPTION = "Adding never-opened search results to a collection or a playlist: every title arrives, one or several per request, next to an opened one too"
 
 import re
-import time
 
 TERMS = ["Heretic", "Nosferatu", "Anora", "Conclave", "Flow", "The Substance", "Civil War", "Longlegs",
          "Sinners", "Presence", "Companion", "The Monkey", "Novocaine", "Warfare", "Drop", "Babygirl"]
 
-RECORD = "PROD-FINDINGS #20"
-
 
 def run(t):
     user = t.api.user
-    made = []  # (kind, id) to delete again
+    made = []  # ids to delete again
 
     def in_db(item_id):
         return t.db.one("select count(*) from BaseItems where lower(replace(Id,'-',''))=?", (item_id.replace("-", "").lower(),))[0]
 
+    def imdb(hit):
+        return re.search(r"tt\d+", hit["Path"]).group(0)
+
     def fresh_hits():
-        """Search hits that are no row in the database, so their id is synthetic."""
+        """Search hits that are no row in the database, so their id is synthetic. One per title:
+        two hits of one title become one item, and the counts below would be off."""
         seen = set()
         for term in TERMS:
             try:
@@ -26,55 +27,56 @@ def run(t):
                 t.log(f"search \"{term}\" failed: {e}")
                 continue
             for hit in hits:
-                if hit["Id"] in seen or not re.search(r"tt\d+", hit.get("Path") or ""):
+                if not re.search(r"tt\d+", hit.get("Path") or "") or hit["Id"] in seen or imdb(hit) in seen:
                     continue
-                seen.add(hit["Id"])
+                seen.update((hit["Id"], imdb(hit)))
                 if not in_db(hit["Id"]):
                     yield hit
 
-    def openable(hit_id):
-        """The control: opening the hit is what has always materialized it."""
-        st, _ = t.api.call("GET", f"/Items/{hit_id}?userId={user}")
-        return st == 200
-
     hits = fresh_hits()
+
+    def take(n, what):
+        got = [hit for _, hit in zip(range(n), hits)]
+        if len(got) < n:
+            t.skip(f"no {n} search hit(s) outside the library left for {what}")
+        return got
+
+    def members(path):
+        got = t.api.get(path + "&Fields=ProviderIds")
+        return sorted((i.get("ProviderIds") or {}).get("Imdb") or i["Name"] for i in got.get("Items", []))
+
+    def add(group, path, listing, wanted, new, what):
+        """Adds `new` in one request and expects the group to hold `wanted` afterwards."""
+        st, _ = t.api.call("POST", f"{path}{'&' if '?' in path else '?'}ids={','.join(h['Id'] for h in new)}")
+        wanted += new
+        names = ", ".join(h["Name"] for h in new)
+        t.check(st == 204 and members(listing) == sorted(imdb(h) for h in wanted),
+                f"{group} add of {what} ({names}): {st}, the {group} holds {members(listing)}")
+
     try:
         playlist = t.api.post("/Playlists", {"Name": "jfapi-unopened", "Ids": [], "UserId": user, "MediaType": "Video"})["Id"]
-        made.append(("playlist", playlist))
+        made.append(playlist)
         st, col = t.api.call("POST", "/Collections?name=jfapi-unopened")
         t.equal(st, 200, "an empty collection is created")
         collection = col["Id"]
-        made.append(("collection", collection))
+        made.append(collection)
 
-        # Playlist: the id of a hit nothing has materialized.
-        hit = next(hits, None)
-        if hit is None:
-            t.skip("no search hit outside the library among the terms")
-        st, _ = t.api.call("POST", f"/Playlists/{playlist}/Items?ids={hit['Id']}&userId={user}")
-        time.sleep(2)
-        items = t.api.get(f"/Playlists/{playlist}/Items?userId={user}")
-        n = items.get("TotalRecordCount", len(items.get("Items", [])))
-        if st < 300 and n == 0:
-            t.known(False, f"playlist add of the never-opened hit {hit['Name']}: {st} but the playlist is empty", RECORD)
-        else:
-            t.check(st >= 400 or n == 1, f"playlist add of the never-opened hit {hit['Name']}: {st}, {n} item(s) in the playlist")
+        # Playlist: the id of a hit nothing has materialized, then two of them in one request.
+        path, listing, held = f"/Playlists/{playlist}/Items?userId={user}", f"/Playlists/{playlist}/Items?userId={user}", []
+        add("playlist", path, listing, held, take(1, "the playlist"), "a never-opened hit")
+        add("playlist", path, listing, held, take(2, "the playlist"), "two never-opened hits in one request")
 
-        # Collection: same, with a second hit.
-        hit = next(hits, None)
-        if hit is None:
-            t.log("no second fresh hit left for the collection")
-            return
-        st, _ = t.api.call("POST", f"/Collections/{collection}/Items?ids={hit['Id']}")
-        time.sleep(2)
-        got = t.api.get(f"/Items?userId={user}&ParentId={collection}")
-        n = got.get("TotalRecordCount", 0)
-        t.known(st < 300 and n == 1, f"collection add of the never-opened hit {hit['Name']}: {st}, {n} item(s) in the collection", RECORD)
+        # Collection: the same.
+        path, listing, held = f"/Collections/{collection}/Items", f"/Items?userId={user}&ParentId={collection}", []
+        add("collection", path, listing, held, take(1, "the collection"), "a never-opened hit")
+        add("collection", path, listing, held, take(2, "the collection"), "two never-opened hits in one request")
 
-        # Control: once the hit was opened the same add works, which is why the web client does.
-        hit = next(hits, None)
-        if hit is not None and openable(hit["Id"]):
-            st, _ = t.api.call("POST", f"/Collections/{collection}/Items?ids={hit['Id']}")
-            t.equal(st, 204, f"collection add of {hit['Name']} after opening it")
+        # An opened hit next to a never-opened one: the opened one's id is known already, and the
+        # other must not be passed on as it is because of that.
+        opened, unopened = take(2, "the mixed add")
+        st, _ = t.api.call("GET", f"/Items/{opened['Id']}?userId={user}")
+        t.equal(st, 200, f"{opened['Name']} opens")
+        add("collection", path, listing, held, [opened, unopened], "an opened hit and a never-opened one in one request")
     finally:
-        for kind, item_id in made:
+        for item_id in made:
             t.api.call("DELETE", f"/Items/{item_id}")
