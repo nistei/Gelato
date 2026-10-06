@@ -21,6 +21,7 @@ from .api import Api, ApiError
 from .fixtures import Fixtures
 
 SECOND_USER = "jfapi-second"
+FOLDER_MEMO_SECONDS = 10  # GelatoManager.FolderCacheTtl
 
 
 class Skip(Exception):
@@ -133,6 +134,39 @@ class Context:
         task's or a refresh's background writes."""
         time.sleep(after)
         return quiesce(self.api, self.db, lambda m: self.log(m), timeout)
+
+    def folders_ready(self, *paths, timeout=180):
+        """Waits for the scan queued for new library folders, and until Gelato sees the folders.
+        Gelato memoizes its folder lookup for 10 s, misses too, so a request from before the scan
+        can still answer "no folder". That has run out 10 s after the folder items appeared, which
+        is mostly over by the time the scan ends: a fixed sleep after the scan waited it twice.
+        True when every folder item exists."""
+        t0, seen = time.time(), None
+        while seen is None and time.time() - t0 < min(timeout, 60):
+            self.db.invalidate()
+            if all(self.db.one("select count(*) from BaseItems where Path=? and Type like '%.Folder'", (p,))[0] for p in paths):
+                seen = time.time()
+            else:
+                time.sleep(0.5)
+        self.settle(after=0.5, timeout=timeout)
+        if seen is None:
+            return False
+        time.sleep(max(0.0, FOLDER_MEMO_SECONDS + 0.5 - (time.time() - seen)))
+        return True
+
+    def import_catalog(self, catalog, timeout=600):
+        """Imports one catalog as its Import button does and waits for it: the import the scheduled
+        task runs for every enabled catalog, without the library scan the task queues after them
+        (~9 s on a prod copy, and the test has to wait for it). The endpoint answers at once and
+        imports in the background, so the end is read from the log. True when it completed."""
+        ended = "cat /config/log/*.log | grep 'CatalogImportService: Catalog .* sync '"
+        count = lambda: int(self.sh(ended + " | wc -l").strip() or 0)
+        before, t0 = count(), time.time()
+        self.api.post(f"/gelato/catalogs/{catalog['Id']}/{catalog['Type']}/import")
+        while count() == before and time.time() - t0 < timeout:
+            time.sleep(0.2)
+        self.settle()
+        return count() > before and 'sync "completed"' in self.sh(ended + " | tail -1")
 
 
 def make_user2(api, name=SECOND_USER, on_call=None):
