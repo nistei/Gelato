@@ -1,4 +1,4 @@
-DESCRIPTION = "Adding never-opened search results to a collection or a playlist: every title arrives, one or several per request, next to an opened one too"
+DESCRIPTION = "Search results added to a collection or a playlist, or a new one made with them: every title arrives, never-opened ones too, one or several per request"
 
 import re
 
@@ -77,6 +77,27 @@ def run(t):
         st, _ = t.api.call("GET", f"/Items/{opened['Id']}?userId={user}")
         t.equal(st, 200, f"{opened['Name']} opens")
         add("collection", path, listing, held, [opened, unopened], "an opened hit and a never-opened one in one request")
+
+        # A new collection or playlist made with items in it, the "new" choice of a client's add
+        # dialog: the collection takes its ids as strings in the query, the playlist in its body.
+        # The opened hit still goes by the id the search gave it.
+        new = [opened] + take(1, "the new collection")
+        st, col = t.api.call("POST", f"/Collections?name=jfapi-unopened-new&ids={','.join(h['Id'] for h in new)}")
+        got = []
+        if st == 200:
+            made.append(col["Id"])
+            got = members(f"/Items?userId={user}&ParentId={col['Id']}")
+        t.check(st == 200 and got == sorted(imdb(h) for h in new),
+                f"a new collection with an opened hit and a never-opened one ({', '.join(h['Name'] for h in new)}): {st}, it holds {got}")
+
+        new = [opened] + take(1, "the new playlist")
+        st, pl = t.api.call("POST", "/Playlists", {"Name": "jfapi-unopened-new", "Ids": [h["Id"] for h in new], "UserId": user, "MediaType": "Video"})
+        got = []
+        if st == 200:
+            made.append(pl["Id"])
+            got = members(f"/Playlists/{pl['Id']}/Items?userId={user}")
+        t.check(st == 200 and got == sorted(imdb(h) for h in new),
+                f"a new playlist with an opened hit and a never-opened one ({', '.join(h['Name'] for h in new)}): {st}, it holds {got}")
     finally:
         for item_id in made:
             t.api.call("DELETE", f"/Items/{item_id}")
