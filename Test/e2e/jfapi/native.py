@@ -33,6 +33,19 @@ def library_id(t, name):
     return next((v["ItemId"] for v in t.api.get("/Library/VirtualFolders") if v["Name"] == name), None)
 
 
+def wait_refreshed(t, name, timeout=60):
+    """Waits until Jellyfin neither refreshes the library nor has its refresh queued. Returns whether
+    it got there."""
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        state = next((v.get("RefreshStatus") for v in t.api.get("/Library/VirtualFolders") if v["Name"] == name), None)
+        if state in (None, "Idle"):
+            return True
+        t.wait(0.2)
+    t.log(f"the library {name} is still being refreshed after {timeout}s, going on")
+    return False
+
+
 def add_library(t, name, kind, path, expect_type, expect_count, timeout=120):
     """Adds the library, scans only it and waits for `expect_count` items of `expect_type`.
     Returns (library id, item ids)."""
@@ -50,6 +63,11 @@ def add_library(t, name, kind, path, expect_type, expect_count, timeout=120):
         t.wait(0.5)
     # The items are listed before the refresh has named them (provider ids, season and episode
     # numbers): a series opened right now is not extended, there is no id to ask the addon with.
+    # The refresh is waited for by its state on the library: it is no task and pauses between its
+    # writes, so the idle wait alone returned inside it on a busy host. A series page opened then is
+    # not extended (see open_local_series), and the mark the sync task leaves on a series was gone
+    # half a second later, written over by the refresh's own copy of it (localtreetag skipped).
+    wait_refreshed(t, name)
     t.settle(timeout=60)
     t.equal(len(ids), expect_count, f"native {expect_type} items scanned into {name}")
     return lib, ids
@@ -116,6 +134,15 @@ def open_local_series(t, series_id, local_episodes=1, timeout=120):
     """Opens the series page, which extends the tree when the option is on, and returns the episode
     tree once it stopped growing (or after the timeout).
 
+    The page is opened again on every round until the tree is past the local episodes. Gelato does
+    not extend a series while Jellyfin scans it or a folder above it (the scan has not numbered the
+    series' own episodes yet, and Gelato would fill the slots they are about to hold): a later
+    visit does. The episode listing polled here is no such visit, and the library's refresh can
+    still be running when the test gets here, since it is no task and pauses between its writes. One
+    open that landed in it left the tree at the local episode until the timeout (in a sharded run
+    on a busy host: 1 episode after 125 s, 80 after 30 s alone). Once the tree is there the page is
+    not opened again: an open of a series without the sync task's mark syncs it once more.
+
     The tree has to settle before it is compared with anything: for a moment after the scan the local
     episode is listed under its file name with no season and episode number (prod finding 17), so it
     counts as an entry of its own next to the Gelato episode of the same slot and a snapshot taken
@@ -125,9 +152,10 @@ def open_local_series(t, series_id, local_episodes=1, timeout=120):
     polls agree on its size. Without the local episodes a snapshot was taken while the local season
     was not listed at all (73 episodes in seasons 0 and 2 to 5, twice in a row, of a tree that had 80
     with season 1 a moment later); without the seasons one with all 80 episodes and no season 5."""
-    t.api.item(series_id)
-    t0, size = time.time(), None
+    t0, size, tree = time.time(), None, {}
     while time.time() - t0 < timeout:
+        if len(tree) <= local_episodes:
+            t.api.item(series_id)
         tree = episode_tree(t, series_id)
         local = local_episodes_of(t, series_id)
         settled = (len(tree) > local_episodes and all(s is not None and e is not None for s, e in tree)
