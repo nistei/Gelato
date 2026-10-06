@@ -1,0 +1,13 @@
+{
+    "Serilog": {
+        "MinimumLevel": {
+            "Default": "Debug",
+            "Override": {
+                "Microsoft": "Warning",
+                "Microsoft.EntityFrameworkCore.Database.Command": "Information",
+                "System": "Warning",
+                "Gelato": "Debug"
+            }
+        }
+    }
+}
