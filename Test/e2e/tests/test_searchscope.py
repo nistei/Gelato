@@ -104,18 +104,21 @@ def mixed_library(t):
     write_videos(t, [f"{MIXED_PATH}/{MIXED_TITLE}/{MIXED_TITLE}.mkv"])
     add_path(t, view["Name"], MIXED_PATH)
     lib = library_id(t, view["Name"])
-    # The library is the instance's whole movie collection, and refreshing all of it takes longer
-    # than this test may: report the one new folder instead, the way an external tool does.
-    t.api.post("/Library/Media/Updated",
-               {"Updates": [{"Path": MIXED_PATH, "UpdateType": "Created"}]})
-    local, t0 = None, time.time()
-    while time.time() - t0 < 60:
-        hits = t.api.get(f"/Items?userId={t.api.user}&searchTerm=Zappelfroschkonzert"
-                         f"&IncludeItemTypes=Movie&Recursive=true&Fields=Path").get("Items", [])
-        local = next((i["Id"].lower() for i in hits if MIXED_PATH in (i.get("Path") or "")), None)
-        if local:
-            break
-        t.wait(3)
+    # A folder added to a library gets its items with a library scan and nothing less. Reporting
+    # the folder as changed (POST /Library/Media/Updated) refreshes the item that holds the path,
+    # and a new library folder has none yet; refreshing the library alone walks the folders it
+    # already has. The report was waited on for 60 s and never brought the file, so the library's
+    # own half below was left out on every run. The scan is 13 s on a copy of a real library.
+    status, msg = t.api.run_task("RefreshLibrary", timeout=1800)
+    t.equal(status, "Completed", f"library scan with the mixed library's new folder {msg}")
+    row, t0 = None, time.time()
+    while row is None and time.time() - t0 < 10:
+        t.db.invalidate()
+        row = t.db.one("select lower(replace(Id,'-','')) from BaseItems where Path like ? and Type like '%Movies.Movie'",
+                       (MIXED_PATH + "/%",))
+        if row is None:
+            t.wait(0.5)
+    local = row[0] if row else None
     return view, lib.lower(), local
 
 
@@ -169,12 +172,7 @@ def run(t):
         t.log("no library holds Gelato's movie folder, the mixed library is left out")
         return
     try:
-        # Scanning the file in is the instance's business and it may take longer than this test:
-        # what the scope rule decides is the half below, which needs no scan.
-        if local is None:
-            t.log(f"the local file was not scanned into {view['Name']!r} in time, "
-                  "the library's own half is left out")
-        else:
+        if t.check(local is not None, f"the scan brings the local file into {view['Name']!r}"):
             st, found = search(t, "Zappelfroschkonzert", scope, "movies", "Movie", by="parentId")
             t.equal(st, 200, "the mixed library answers")
             t.check(any(i["Id"].lower() == local for i in found),
@@ -189,9 +187,10 @@ def run(t):
         check_scope(t, f"the search inside the mixed library for {ADDON_TERM!r}", scope, found)
     finally:
         remove_path(t, view["Name"], MIXED_PATH)
+        # The file's movie, then the folder item the scan made for the library's new path.
         for (item_id,) in t.db.query(
-                "select lower(replace(Id,'-','')) from BaseItems where Path like ?",
-                (MIXED_PATH + "/%",)):
+                "select lower(replace(Id,'-','')) from BaseItems where Path like ? or Path=? order by length(Path) desc",
+                (MIXED_PATH + "/%", MIXED_PATH)):
             t.api.call("DELETE", f"/Items/{item_id}")
         t.sh(f"rm -rf {MIXED_PATH}")
         t.db.invalidate()
