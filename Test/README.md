@@ -144,6 +144,20 @@ A slow test is almost always waiting, not working: the catalog tests spent about
   took 145 s on a fresh instance. 5 to 8 per catalog are enough.
 - **Clean up without leaving work behind.** A scan or task started in a `finally` is paid by the next test as
   idle wait.
+- **Empty Gelato's memos by saving the configuration.** A save of the plugin configuration, unchanged too, clears
+  Gelato's caches at once: the 10 s folder memo, the configuration memo, the stream cache. A test that needs the
+  next request to miss posts the configuration instead of waiting the memo out (`seedrace`: 49 s to 4 s).
+- **A path added to a library needs a library scan.** `POST /Library/Media/Updated` refreshes the item that holds
+  the path, and a new library path has none; refreshing the library alone walks the folders it already has.
+  Neither brings the files, however long the test waits (`searchscope` waited 60 s on every run and skipped the
+  checks behind it). A new library of its own is scanned by `add_library` in a second or two.
+- **One wait for a batch of deletes.** `api.delete_inserted()` waits 3 s for the insert's background save, every
+  time. A cleanup of several inserted items calls `api.settle_insert()` once and deletes them plainly
+  (`useractions`: 30 s to 3 s). A retry loop does not sleep after its last attempt.
+- **Some waits are the test.** A window that proves nothing happens (not probed again, not submitted), the
+  plugin's 30 s delayed probe, a deliberately slow stub, a server restart, a full scan or purge of the library:
+  `remuxdb`, `introsegments`, `preprobe`, `playbackonce`, `taskcontext`, `purgeall` and `localtreescan` take 30 to
+  55 s for that and stay there. Look for the wait that waits for nothing instead.
 - **Measure.** The run's summary lists the slowest tests as `test s / idle wait s / other`; a large idle wait
   belongs to the test before it. `python tools/timing.py <run.py arguments>` runs the same and prints where the
   time went: sleeps by caller, tasks, settles, HTTP calls by path.
