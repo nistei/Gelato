@@ -60,13 +60,13 @@ def run(t):
         server has."""
         sql = ("select count(*) from BaseItems b join BaseItemProviders p on p.ItemId=b.Id and lower(p.ProviderId)='stremio' "
                "where p.ProviderValue=? and (b.Tags is null or b.Tags not like '%gelato-stream%')")
-        for attempt in range(4 if retry else 1):
+        attempts = 4 if retry else 1
+        for attempt in range(attempts):
             n = t.db.one(sql, (stremio,))[0]
-            if n:
+            if n or attempt == attempts - 1:
                 return n
             t.db.invalidate()
             time.sleep(1)
-        return n
 
     def library_item(stremio, kind="Movie"):
         """The library id of the title, retried: a snapshot taken right after the write can be
@@ -293,9 +293,12 @@ def run(t):
                 st2, _ = t.api.call("DELETE", f"/UserFavoriteItems/{h['Id']}?userId={user}")
                 t.check(st2 == 200, f"unmarking works once the hit's id is known ({st2})")
     finally:
+        # One wait for the last insert's background save, not one before every delete: the others
+        # were inserted before it, and ten waits were 30 s of the test's 54.
+        t.api.settle_insert()
         for item in inserted:
             try:
-                t.api.delete_inserted(item)
+                t.api.call("DELETE", f"/Items/{item}")
             except Exception as e:
                 t.log(f"could not remove {item}: {e}")
         t.log(f"removed {len(inserted)} inserted item(s) again")
