@@ -10,10 +10,10 @@ Python 3, standard library only. The tests require Docker.
 # Build the plugin
 dotnet build Gelato.csproj -c Release
 
-# Start a throwaway Jellyfin 12.1 with the plugin installed (Jellyfin writes a meta.json into the
+# Start a throwaway Jellyfin 12.2 with the plugin installed (Jellyfin writes a meta.json into the
 # mounted folder on the first start, so the mount is not read-only)
 docker run -d --name jf-tests -p 8096:8096 -v jf-tests-config:/config -v jf-tests-cache:/cache \
-  -v "$PWD/bin/Release/net10.0:/config/plugins/Gelato" jellyfin/jellyfin:12.1
+  -v "$PWD/bin/Release/net10.0:/config/plugins/Gelato" jellyfin/jellyfin:12.2
 
 # Run the tests
 # The addon URL is the AIOStreams manifest. Can also be set via ENV JF_ADDON_URL, or come with the
@@ -24,7 +24,6 @@ python Test/e2e/run.py --container jf-tests --destructive --addon-url <addon URL
 docker rm -f jf-tests && docker volume rm jf-tests-config jf-tests-cache
 ```
 
-The addon URL is the AIOStreams manifest.
 The setup creates the administrator `admin` with the password `jfapi` unless given otherwise.
 Tests that count Gelato's Debug lines set Gelato to Debug in `/config/config/logging.json` and restart
 the server when it does not log at Debug yet: Jellyfin applies a log level only on a restart. An
@@ -33,7 +32,8 @@ instance started with that file in place saves them the restarts.
 
 ## Running against an existing instance
 
-The instance must run in a Docker container: the checks copy its database out with `docker cp`.
+The instance must run in a Docker container: the checks read its database in place, through a sidecar
+container (`<container>-sql`, image `python:3-slim`) that mounts the instance's volumes and ends with the run.
 The destructive tests reconfigure the instance, so use a throwaway instance or a backup.
 
 ```shell
@@ -50,7 +50,20 @@ python Test/e2e/run.py --container <name> --destructive
 
 # Explicit items instead of automatic picks
 python Test/e2e/run.py --container <name> play --movie <id> --row <id>
+
+# The picks a test got in a run that printed this seed; stop at the first failure
+python Test/e2e/run.py --container <name> --seed 1234 -x lockmeta
 ```
+
+What a run does on its own, and the option that turns it off:
+
+- Picks are seeded and the seed is printed. Before each test the run waits until the server is idle.
+- The addon's manifest, catalogs and metas are replayed from `.cache/addon/` after their first request, streams
+  always come from the addon (`--addon live` asks the addon for everything, `--addon refresh` records anew).
+- A failed test runs once more alone at the end: passing then makes it **flaky**, reported but not failing the
+  run (`--no-rerun`). **KNOWN** is a failed check for a documented open bug, **SKIP** a missing prerequisite.
+- Catalogs are limited to 5 items (1 for a series catalog) for the run and get their limits back after it
+  (`--full-catalogs`).
 
 Every run keeps its whole output, with every test's notes, in `Test/e2e/.cache/run-<container>.txt`,
 whatever `-v` says and wherever stdout went: read a failure there instead of running again.
@@ -68,20 +81,22 @@ Everything lives in `Test/e2e`. `run.py` puts that folder on `sys.path`, so impo
 | Path | What |
 |---|---|
 | `run.py` | Entry point: parses options, waits for the server, runs the setup on an empty instance (`--addon-url`), preflight (Gelato loaded, database readable), then the selected tests in order. Exit code 1 on any FAIL or ERROR, 2 on a setup problem. |
-| `jfapi/api.py` | `Api(base, user, password)`, one logged-in user. `call()` returns `(status, body)` and never raises; `get`/`post`/`delete` raise `ApiError` on a non-2xx status. Helpers: `item`, `sources`, `user_data`, `resume`, `mark_played`, `report` (playback start/progress/stop), `search`, `run_task`, `wait_tasks_idle`. |
-| `jfapi/db.py` | `Db(container)`: read-only queries on a snapshot of `jellyfin.db`, copied out with `docker cp` and taken again after every API call. Gelato helpers: `stream_rows`, `row_users`, `stream_row_ids`, `playlist_links`. `sh()` runs a shell command in the container. |
-| `jfapi/fixtures.py` | Picks the test items from the instance: movies with at least two streams, a short unwatched series with a streamed season 1. Falls back to inserting a title from the addon's search on a small library. Picks are memoized for the run and never handed out twice. |
+| `jfapi/api.py` | `Api(base, user, password)`, one logged-in user. `call()` returns `(status, body)` and never raises; `get`/`post`/`delete` raise `ApiError` on a non-2xx status. Helpers: `item`, `sources`, `user_data`, `resume`, `mark_played`, `report` (playback start/progress/stop), `search`, `run_task`, `wait_tasks_idle`, `settle_insert`, `delete_inserted`. |
+| `jfapi/db.py` | `Db(container)`: read-only queries on the live `jellyfin.db`, answered by the sidecar in milliseconds; `connect()` gives a read transaction that sees one state. Without the sidecar (no image, the container cannot start) it falls back to a copy taken with `docker cp` after every API call. `order by random() limit n` is shuffled with the run's seed. Gelato helpers: `stream_rows`, `row_users`, `stream_row_ids`, `playlist_links`. `sh()` runs a shell command in the container, through one long-lived `docker exec`. |
+| `jfapi/fixtures.py` | Picks the test items from the instance: movies with at least two streams, a short unwatched series with a streamed season 1. Falls back to inserting a title from the addon's search on a small library. Each test gets its own picks, memoized for that test; an item an earlier test was handed is only handed out again when the candidates run out. |
 | `jfapi/probe.py` | Stream rows that went through Gelato's probe (a video stream in the database), probing more rows of the fixture movies when needed, for tests of Jellyfin's library tasks. Also log line counts and row paths (never log those: debrid URLs carry the API key). |
-| `jfapi/native.py` | Native libraries for tests of items that are not Gelato's: small video files written with the container's ffmpeg (`write_videos`), a library scanned and waited for (`add_library`), removed again items first (`remove_libraries`, `rows_under`), and the episode tree of a local series that Gelato extends (`open_local_series`, `episode_tree`, `season_numbers`, `gelato_episodes`). |
-| `jfapi/bootstrap.py` | Setup of an empty instance: wizard (admin password `jfapi`), Gelato config with one movie catalog (20 items) and one series, libraries on `/tmp/gelato/movies` and `/tmp/gelato/series`, scan, catalog import, then waits until the WAL stops growing. |
-| `jfapi/testing.py` | The harness: `Context` (the `t` passed to a test), `load_tests`, `ORDER`, `run_test`, the second user `jfapi-second`. |
+| `jfapi/native.py` | Native libraries for tests of items that are not Gelato's: small video files written with the container's ffmpeg (`write_videos`), a library scanned and waited for (`add_library`, which waits for the library's refresh with `wait_refreshed`), removed again items first (`remove_libraries`, `rows_under`), and the episode tree of a local series that Gelato extends (`open_local_series`, `episode_tree`, `season_numbers`, `gelato_episodes`). |
+| `jfapi/bootstrap.py` | Setup of an empty instance: wizard (admin password `jfapi`), Gelato config with one movie catalog (20 items) and one series catalog (1 series), each creating a collection, libraries on `/tmp/gelato/movies` and `/tmp/gelato/series`, scan, catalog import, the Webhook plugin, then waits until the WAL stops growing. Also the catalog limits of a run and `wait_ready`. |
+| `jfapi/testing.py` | The harness: `Context` (the `t` passed to a test, with `settle`, `folders_ready`, `import_catalog`), `quiesce` (the idle wait), `load_tests`, `ORDER`, `run_test`, the second user `jfapi-second`. |
+| `jfapi/addon.py` | The proxy between Gelato and the addon that records and replays its answers for a run. |
+| `jfapi/weights.json` | Seconds per test, by which a parallel run plans its end. |
 | `tests/test_<name>.py` | One test per module. `python Test/e2e/run.py list` prints them with their descriptions. |
 | `tools/` | Ad-hoc scripts for one API call (`jf.py`), one query (`db.py`), a movie's state (`state.py`) and single investigations. Configured through `JF_URL`, `JF_ADMINUSER`, `JF_ADMINPASSWORD`, `JF_CONTAINER`; not run by `run.py`. |
-| `.cache/` | Login tokens per port and user, database snapshots per process. Ignored by git. Delete the tokens after recreating an instance. |
+| `.cache/` | Login tokens per port and user, the recorded addon answers (`addon/`), each run's output (`run-<container>.txt`, `shard-<n>.txt`), the weights a parallel run measured (`weights.json`), database copies per process when there is no sidecar. Ignored by git. Delete the tokens after recreating an instance. |
 
 ### Writing a test
 
-A test module has `DESCRIPTION`, optionally `DESTRUCTIVE = True`, and `run(t)`:
+A test module has `DESCRIPTION`, optionally `DESTRUCTIVE = True` and `LAST = True`, and `run(t)`:
 
 ```python
 DESCRIPTION = "Opening a movie syncs its streams: sources listed, rows linked"
@@ -91,7 +106,7 @@ def run(t):
     movie = t.movie()                      # fixture: a Gelato movie with at least two streams
     srcs = t.api.sources(movie)            # opening the item runs Gelato's sync
     t.check(len(srcs) >= 2, "at least two sources")
-    rows = t.db.stream_rows(movie)         # fresh snapshot, the API call above invalidated the old one
+    rows = t.db.stream_rows(movie)         # read from the live database, after the API call above
     t.log("rows in the database:", rows)   # shown on failure or with -v
     t.equal(rows["unowned"], 0, "rows without an owner")
 ```
@@ -102,7 +117,9 @@ def run(t):
   not and the stream's own URL does not answer either, the link is dead at the debrid service and the check is
   noted, not failed.
 - `t.check` and `t.equal` record a verdict and go on; the test fails if any failed. An exception makes it ERROR.
-  `t.skip("why")` for a missing prerequisite (e.g. the Webhook plugin).
+  `t.skip("why")` or `t.require(condition, "why")` for a missing prerequisite (e.g. the Webhook plugin).
+- `t.known(condition, "what should hold", "where it is written down")` for a check that fails because of a
+  documented open bug: the test ends as KNOWN, not FAIL. Anything new still fails.
 - `LAST = True` for a test that leaves the instance unfit for the others (`purgeall`): nothing runs after it on
   its instance, and the failed tests get their second run before it.
 - Add the name to `ORDER` in `jfapi/testing.py`; unlisted tests run last, alphabetically. Cheap read-only tests go
@@ -179,9 +196,11 @@ A slow test is almost always waiting, not working: the catalog tests spent about
 
 ### Environment
 
-- The instance has to run in Docker: the database is copied out with `docker cp` and `sh()` uses `docker exec`.
-- The webhook test listens on port 8765 on the host, `searchfail` runs an addon proxy on port 8766; both need the
-  container to reach `host.docker.internal`.
+- The instance has to run in Docker: the database is read by a sidecar container on the instance's volumes
+  (`docker run --volumes-from`, image `python:3-slim`) and `sh()` uses `docker exec`.
+- The run's addon proxy and the stubs of `webhook`, `searchfail`, `metaid`, `canonicalid` and the RemuxDB tests
+  listen on the host, each on a free port it is given: the container has to reach `host.docker.internal`. Two
+  runs against two instances do not collide.
 - The server's clock has to be steady. Under Docker Desktop the containers run on the WSL2 VM's clock, and that one
   was seen running 4.9 % fast and being set back by 1.5 s every half minute. Gelato orders "synced" and "reset" by
   the clock, so a step back between the two skipped a sync and failed `upgrade`. The run compares the two clocks
