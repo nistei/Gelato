@@ -74,6 +74,16 @@ shared queue, so the run takes the suite's time divided by the instances whateve
 each test's verdict as it comes in, and at the end the notes of every failed or flaky test and the totals; each
 instance's full output is in `.cache/shard-<n>.txt`.
 
+`python Test/e2e/tools/upgrade.py run --container <container> --adminuser <user> --scenario custom --old <Gelato.dll> --new <Gelato.dll>`
+answers what a change of build does to a library that was set up before it. It prepares the instance with the
+old build the way an install of some age looks (folders of the admin's own choosing, a per-user folder, local
+files beside Gelato's, the folders used before left as libraries; `mixed`, `single` and `catalog` are the other
+scenarios), records every item with its folder, the provider ids and all user data, swaps the build in and
+compares after the restart, a scan, stream syncs, an import and new titles: what is gone, what is in another
+folder, what each library counts, where a search is answered. `prep` and `check` run the two halves alone, for a
+Windows instance too (`--win <its folder> --url ...`), and `check --same-build` is the control run that shows
+what a restart alone does. Its docstring has the rest.
+
 ## Test structure for agents
 
 Everything lives in `Test/e2e`. `run.py` puts that folder on `sys.path`, so imports are `from jfapi...`.
