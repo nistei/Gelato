@@ -27,6 +27,7 @@ public class SearchActionFilter(
     GelatoManager manager,
     LibraryFolderService libraryFolders,
     ParentalRatings parental,
+    SearchMetaAhead metaAhead,
     ILogger<SearchActionFilter> log
 ) : IAsyncActionFilter, IOrderedFilter
 {
@@ -167,6 +168,27 @@ public class SearchActionFilter(
             paged.Length,
             total
         );
+
+        // The first results the library does not hold, under their search ids: their full metas
+        // are asked for once the user stops typing, so the open does not wait for them. Every
+        // search counts, an empty one too: it is newer than the one before.
+        if (start == 0)
+        {
+            // Per type: Jellyfin Web shows the movies and the series in rows of their own, and a
+            // click lands near the start of one.
+            var ahead = cfg.SearchMetaAhead
+                ? new[] { BaseItemKind.Movie, BaseItemKind.Series }
+                    .SelectMany(kind =>
+                        dtos.Where(d => d.Type == kind)
+                            .Select(d => (SearchId: d.Id, Meta: manager.GetStremioMeta(d.Id)))
+                            .Where(r => r.Meta is not null)
+                            .Select(r => (r.SearchId, r.Meta!))
+                            .Take(SearchMetaAhead.Titles)
+                    )
+                    .ToList()
+                : [];
+            metaAhead.Searched(userId, searchTerm, ahead, stremio);
+        }
 
         var result = new OkObjectResult(
             new QueryResult<BaseItemDto> { Items = paged, TotalRecordCount = total }

@@ -61,6 +61,13 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool HideUnplayedSearchTitles { get; set; } = false;
 
     /// <summary>
+    /// Once a user's search has settled, the full metas of its first
+    /// <see cref="Services.SearchMetaAhead.Titles"/> movies and series the library does not hold
+    /// are asked for in the background, so opening one does not wait for the meta addon.
+    /// </summary>
+    public bool SearchMetaAhead { get; set; } = true;
+
+    /// <summary>
     /// How many days a title opened from search stays hidden before it is removed. Not on the
     /// settings page: a fixed age that only the tests change.
     /// </summary>
@@ -256,6 +263,7 @@ public class UserConfig
             FilterUnreleased = baseConfig.FilterUnreleased,
             FilterUnreleasedBufferDays = baseConfig.FilterUnreleasedBufferDays,
             HideUnplayedSearchTitles = baseConfig.HideUnplayedSearchTitles,
+            SearchMetaAhead = baseConfig.SearchMetaAhead,
             RemoveUnplayedSearchTitlesDays = baseConfig.RemoveUnplayedSearchTitlesDays,
             DisableSourceCount = baseConfig.DisableSourceCount,
             FFmpegAnalyzeDuration = baseConfig.FFmpegAnalyzeDuration,

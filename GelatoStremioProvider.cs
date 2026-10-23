@@ -39,6 +39,7 @@ public class GelatoStremioProvider(
         if (_metaCache.TryGetValue(id, out var entry) && entry.Expiry > DateTime.UtcNow)
             return entry.Meta;
         _metaCache.TryRemove(id, out _);
+        _metaAhead.TryRemove(id, out _);
         return null;
     }
 
@@ -264,13 +265,86 @@ public class GelatoStremioProvider(
     {
         var cached = GetCachedMeta(id);
         if (cached is not null)
+        {
+            if (_metaAhead.TryRemove(id, out _))
+                log.LogDebug("GetMetaAsync: taking the meta asked for ahead for {Id}", id);
             return cached;
+        }
 
+        // A second caller of a meta under way waits for that request instead of sending its own:
+        // the open of a search result whose meta is being asked for ahead (StartMetaAhead).
+        var key = $"{mediaType}:{id}";
+        var flight = new Lazy<Task<StremioMeta?>>(() => FetchMetaAsync(id, mediaType, ttl));
+        var running = _metaInFlight.GetOrAdd(key, flight);
+        if (running != flight)
+            log.LogDebug("GetMetaAsync: joining the request under way for {Id}", id);
+        try
+        {
+            return await running.Value.ConfigureAwait(false);
+        }
+        finally
+        {
+            _metaInFlight.TryRemove(new KeyValuePair<string, Lazy<Task<StremioMeta?>>>(key, running));
+        }
+    }
+
+    private async Task<StremioMeta?> FetchMetaAsync(
+        string id,
+        StremioMediaType mediaType,
+        TimeSpan? ttl
+    )
+    {
         var url = BuildUrl(["meta", mediaType.ToString().ToLower(), id]);
-        var r = await GetJsonAsync<StremioMetaResponse>(url);
+        var r = await GetJsonAsync<StremioMetaResponse>(url).ConfigureAwait(false);
         if (r?.Meta is { } meta)
             _metaCache[id] = (meta, DateTime.UtcNow.Add(ttl ?? MetaCacheTtl));
         return r?.Meta;
+    }
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<
+        string,
+        Lazy<Task<StremioMeta?>>
+    > _metaInFlight = new(StringComparer.OrdinalIgnoreCase);
+
+    // Ids whose meta was asked for ahead and not taken yet: the open that takes one says so.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _metaAhead =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Asks for a search result's full meta before it is opened, into the cache the insert reads
+    /// (<see cref="GetMetaAsync(StremioMeta, TimeSpan?)"/>, by the same ids). An open while it is
+    /// under way joins it. Nothing is asked for a meta already at hand.
+    /// </summary>
+    public void StartMetaAhead(StremioMeta meta)
+    {
+        var ids = new[] { meta.ImdbId, meta.Id }
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id!)
+            .ToList();
+        if (ids.Count == 0 || ids.Any(id => GetCachedMeta(id) is not null))
+            return;
+
+        log.LogDebug(
+            "StartMetaAhead: asking for the meta of {Id} ahead of its open",
+            ids[0]
+        );
+        _ = GetMetaAsync(meta)
+            .ContinueWith(
+                t =>
+                {
+                    if (t.IsFaulted)
+                    {
+                        log.LogDebug(t.Exception, "StartMetaAhead: no meta for {Id}", ids[0]);
+                        return;
+                    }
+
+                    if (t.Result is null)
+                        return;
+                    foreach (var id in ids.Where(id => GetCachedMeta(id) is not null))
+                        _metaAhead[id] = 0;
+                },
+                TaskScheduler.Default
+            );
     }
 
     /// <summary>

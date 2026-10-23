@@ -98,6 +98,7 @@ export default function (view) {
   const chkLazyImages = page.querySelector('#chkLazyImages');
   const chkPersonRemoteTitles = page.querySelector('#chkPersonRemoteTitles');
   const chkHideUnplayedSearchTitles = page.querySelector('#chkHideUnplayedSearchTitles');
+  const chkSearchMetaAhead = page.querySelector('#chkSearchMetaAhead');
   const chkPreProbe = page.querySelector('#chkPreProbe');
   const chkRefreshVersionsAfterProbe = page.querySelector('#chkRefreshVersionsAfterProbe');
   const chkPlaybackFailover = page.querySelector('#chkPlaybackFailover');
@@ -287,6 +288,8 @@ export default function (view) {
     chkPersonRemoteTitles.disabled = off;
     page.querySelector('#personRemoteTitlesSetting').classList.toggle('gelatoNested-off', off);
     chkHideUnplayedSearchTitles.disabled = off;
+    chkSearchMetaAhead.disabled = off;
+    page.querySelector('#searchMetaAheadSetting').classList.toggle('gelatoNested-off', off);
     page.querySelector('#hideUnplayedSearchTitlesSetting').classList.toggle('gelatoNested-off', off);
   }
 
@@ -1021,6 +1024,7 @@ export default function (view) {
       if (chkLazyImages) chkLazyImages.checked = cfg.LazyImages ?? false;
       if (chkPersonRemoteTitles) chkPersonRemoteTitles.checked = cfg.PersonRemoteTitles ?? true;
       chkHideUnplayedSearchTitles.checked = cfg.HideUnplayedSearchTitles ?? false;
+      chkSearchMetaAhead.checked = cfg.SearchMetaAhead ?? true;
       showPersonRemoteTitles();
       if (chkPreProbe) chkPreProbe.checked = cfg.PreProbe ?? true;
       chkRefreshVersionsAfterProbe.checked = cfg.RefreshVersionsAfterProbe ?? true;
@@ -1070,6 +1074,7 @@ export default function (view) {
       cfg.LazyImages = chkLazyImages.checked;
       cfg.PersonRemoteTitles = chkPersonRemoteTitles.checked;
       cfg.HideUnplayedSearchTitles = chkHideUnplayedSearchTitles.checked;
+      cfg.SearchMetaAhead = chkSearchMetaAhead.checked;
       cfg.PreProbe = chkPreProbe.checked;
       cfg.RefreshVersionsAfterProbe = chkRefreshVersionsAfterProbe.checked;
       cfg.PlaybackFailover = chkPlaybackFailover.checked;
